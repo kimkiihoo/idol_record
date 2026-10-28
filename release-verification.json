@@ -1,0 +1,19 @@
+{
+  "version": "1.1.1",
+  "version_code": 3,
+  "schema_version": 2,
+  "apk_bytes": 169017,
+  "apk_sha256": "4fc2aea1f2ab81282bcd85177a8fcade4ad4338c86214d94c1529b149a8ce2bc",
+  "exact_asset_match": true,
+  "readme_links_valid": true,
+  "source_included": true,
+  "source_seed_blank": true,
+  "source_files": 19,
+  "new_install_blank": true,
+  "private_records_and_images_excluded": true,
+  "same_signing_certificate_as_1_0_0": true,
+  "same_signing_certificate_as_1_1_0": true,
+  "desktop_data_unchanged": true,
+  "retired_ui_removed": true,
+  "image_ui_removed": true
+}
