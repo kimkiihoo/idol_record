@@ -29,6 +29,7 @@ class MiniNode {
   addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
   dispatch(type) { for (const fn of this.listeners[type] || []) fn({ target: this, preventDefault() {} }); }
   click() { this.dispatch('click'); }
+  focus() { this.doc.activeElement = this; this.dispatch('focus'); }
   scrollIntoView() {}
   querySelector(selector) { return this.doc.find(selector, this)[0] || null; }
   querySelectorAll(selector) { return this.doc.find(selector, this); }
@@ -157,4 +158,60 @@ test('invalid backup does not write data and a damaged startup can restore the p
   assert.equal(recovering.writes.length, 1);
   assert.equal(recovering.writes[0].records[0].id, 'preserved');
   assert.doesNotMatch(recovering.get('#main').innerHTML, /数据需要恢复/);
+});
+
+
+test('custom activity names survive Chinese composition without native suggestion popups', () => {
+  const app = launch(fixture([event()]));
+  app.click('#add-event');
+  const name = app.get('#e-name');
+  assert.equal(name.attrs.list, undefined);
+  assert.equal(name.attrs.autocomplete, 'off');
+  assert.doesNotMatch(app.get('#modal-body').innerHTML, /<datalist|\slist=/);
+  assert.ok(!app.get('#event-names-picker').open);
+  name.focus(); name.dispatch('compositionstart');
+  name.value = 'xin huo dong'; name.dispatch('input');
+  assert.equal(name.value, 'xin huo dong');
+  name.value = '新活动 自定义名称'; name.dispatch('compositionend'); name.dispatch('input');
+  assert.equal(app.writes.length, 0);
+  app.click('#save-event');
+  const saved = app.writes.at(-1);
+  assert.equal(saved.records.length, 2);
+  assert.equal(saved.records.find(row => row.id !== 'event-1').event_name, '新活动 自定义名称');
+});
+
+test('history selection is explicit, searchable and still editable without saving or changing other fields', () => {
+  const app = launch(fixture([event()]));
+  app.click('#add-event');
+  const name = app.get('#e-name'), panel = app.get('#event-names-picker'), search = app.get('#event-names-search');
+  name.value = '未保存的名称';
+  panel.open = true; panel.dispatch('toggle');
+  search.dispatch('compositionstart'); search.value = 'ce'; search.dispatch('input');
+  assert.equal(name.value, '未保存的名称');
+  search.value = '测试'; search.dispatch('compositionend');
+  app.click('#event-names [data-history-index]');
+  assert.equal(name.value, '测试演出');
+  assert.equal(panel.open, false);
+  assert.equal(app.document.activeElement, name);
+  assert.equal(app.writes.length, 0);
+  name.value += ' · 追加主题'; name.dispatch('input');
+  app.click('#save-event');
+  assert.equal(app.writes.at(-1).records.find(row => row.id !== 'event-1').event_name, '测试演出 · 追加主题');
+});
+
+test('city history refreshes venue choices and item history still triggers matching price suggestions', () => {
+  const app = launch(fixture([event('event-1', [{type:'cheki',member:'示例成员',tickets:1,price_per_ticket:25,total_cost:25}])]));
+  app.click('#add-event');
+  app.click('#cities [data-history-index]');
+  assert.equal(app.get('#e-city').value, '测试城市');
+  app.click('#venues [data-history-index]');
+  assert.equal(app.get('#e-venue').value, '测试场地');
+  app.click('#modal-close'); app.click('[data-event]'); app.click('#add-item');
+  assert.equal(app.get('#i-name').attrs.list, undefined);
+  app.click('#names [data-history-index]');
+  assert.equal(app.get('#i-name').value, '示例成员');
+  app.click('[data-price]');
+  app.click('#save-item');
+  assert.equal(app.writes.at(-1).records[0].interactions.length, 2);
+  assert.equal(app.writes.at(-1).records[0].interactions[1].total_cost, 25);
 });

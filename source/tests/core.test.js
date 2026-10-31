@@ -247,7 +247,7 @@ test('schema 1 migration drops images and preserves all non-image records, money
   const before = JSON.stringify(source);
   const migrated = Core.parseBackup(before);
   assert.equal(migrated.version, 2);
-  assert.equal(migrated.app_version, '1.1.1');
+  assert.equal(migrated.app_version, '1.1.2');
   const expectedRecords = JSON.parse(JSON.stringify(source.records));
   delete expectedRecords[0].interactions[0].image;
   assert.deepEqual(migrated.records, expectedRecords);
@@ -263,7 +263,7 @@ test('schema 1 migration drops images and preserves all non-image records, money
 
 test('new install state is blank, contains no private seed, and returns independent objects', () => {
   const empty = Core.createEmptyState();
-  assert.deepEqual(empty, { format: 'idol-tracker-backup', version: 2, app_version: '1.1.1', records: [], config: { monthly_budget: 0 }, assets: { images: {} } });
+  assert.deepEqual(empty, { format: 'idol-tracker-backup', version: 2, app_version: '1.1.2', records: [], config: { monthly_budget: 0 }, assets: { images: {} } });
   assert.deepEqual(Core.validateState(empty), empty);
   empty.records.push(event()); empty.config.monthly_budget = 50; empty.assets.images['private.jpg'] = 'data:image/jpeg;base64,AAAA';
   assert.deepEqual(Core.createEmptyState().records, []);
@@ -336,7 +336,7 @@ test('1.1.0 schema 2 data drops images without changing other fields and remains
   previous.records[0].interactions[0].image = 'photo.jpg';
   previous.assets.images['photo.jpg'] = 'data:image/jpeg;base64,AAAA';
   const source = JSON.stringify(previous), expected = JSON.parse(JSON.stringify(previous));
-  expected.app_version = '1.1.1';
+  expected.app_version = '1.1.2';
   delete expected.records[0].interactions[0].image;
   expected.assets.images = {};
   const migrated = Core.parseBackup(source);

@@ -7,7 +7,7 @@
   'use strict';
   const FORMAT = 'idol-tracker-backup';
   const SCHEMA_VERSION = 2;
-  const APP_VERSION = '1.1.1';
+  const APP_VERSION = '1.1.2';
   const MAX_MONEY = 99999999999999;
   const IMAGE_FIELDS = new Set(['image', 'image_name', 'photo', 'photo_name', 'images', 'photos', 'image_files', 'image_data', 'photo_data', 'image_url', 'photo_url', 'image_path', 'photo_path']);
   const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
