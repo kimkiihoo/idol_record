@@ -40,7 +40,7 @@ test('missing event IDs are stable, duplicate known IDs and malformed input are 
   assert.throws(() => state([event(), event()]));
   for (const date of ['2026-02-29', '0000-01-01', '2026-13-01', '2026-04-31', '2026-1-01']) assert.throws(() => state([event({ date })]));
   assert.doesNotThrow(() => state([event({ date: '2024-02-29' })]));
-  for (const input of ['{}', '{', '{"records":null}', '{"records":[],"version":6}', '{"records":[],"config":{"__proto__":{"polluted":1}}}']) assert.throws(() => Core.parseBackup(input));
+  for (const input of ['{}', '{', '{"records":null}', '{"records":[],"version":8}', '{"records":[],"config":{"__proto__":{"polluted":1}}}']) assert.throws(() => Core.parseBackup(input));
   for (const n of [0, -1, 1.5, 'two']) assert.throws(() => state([event({ interactions: [{ type: 'merch', quantity: n, price: 1 }] })]));
   assert.equal({}.polluted, undefined);
 });
@@ -246,12 +246,13 @@ test('schema 1 migration drops images and preserves all non-image records, money
   };
   const before = JSON.stringify(source);
   const migrated = Core.parseBackup(before);
-  assert.equal(migrated.version, 5);
-  assert.equal(migrated.app_version, '1.1.5');
+  assert.equal(migrated.version, 7);
+  assert.equal(migrated.app_version, '1.2.3');
   const expectedRecords = JSON.parse(JSON.stringify(source.records));
   delete expectedRecords[0].interactions[0].image;
+  expectedRecords[0].ticket_quantity=1;expectedRecords[0].ticket_type='付费';expectedRecords[0].ticket_is_free=false;expectedRecords[0].member_roles=[];expectedRecords[0].interactions[0].participant_groups=[];
   assert.deepEqual(migrated.records, expectedRecords);
-  assert.deepEqual(migrated.config, source.config);
+  assert.deepEqual(migrated.config, {...source.config,backup_reminder_days:0});
   assert.deepEqual(migrated.assets, { images: {}, custom_asset: { keep: true } });
   assert.deepEqual(migrated.source_note, source.source_note);
   assert.equal(JSON.stringify(source), before);
@@ -263,7 +264,7 @@ test('schema 1 migration drops images and preserves all non-image records, money
 
 test('new install state is blank, contains no private seed, and returns independent objects', () => {
   const empty = Core.createEmptyState();
-  assert.deepEqual(empty, { format: 'idol-tracker-backup', version: 5, app_version: '1.1.5', records: [], members: [], config: { monthly_budget: 0 }, assets: { images: {} } });
+  assert.deepEqual(empty, { format: 'idol-tracker-backup', version: 7, app_version: '1.2.3', records: [], members: [], config: { monthly_budget: 0, backup_reminder_days: 0 }, assets: { images: {} } });
   assert.deepEqual(Core.validateState(empty), empty);
   empty.records.push(event()); empty.config.monthly_budget = 50; empty.assets.images['private.jpg'] = 'data:image/jpeg;base64,AAAA';
   assert.deepEqual(Core.createEmptyState().records, []);
@@ -339,12 +340,12 @@ test('1.1.0 schema 2 data drops images without changing other fields and remains
   previous.records[0].interactions[0].image = 'photo.jpg';
   previous.assets.images['photo.jpg'] = 'data:image/jpeg;base64,AAAA';
   const source = JSON.stringify(previous), expected = JSON.parse(JSON.stringify(previous));
-  expected.app_version = '1.1.5';
-  expected.version = 5;
+  expected.app_version = '1.2.3';
+  expected.version = 7;
   delete expected.records[0].interactions[0].image;
   expected.assets.images = {};
   const migrated = Core.parseBackup(source);
-  assert.equal(migrated.version, 5);
+  assert.equal(migrated.version, 7);
   assert.deepEqual(migrated, expected);
   assert.deepEqual(Core.validateState(migrated), migrated);
   assert.deepEqual(Core.parseBackup(JSON.stringify(migrated)), migrated);
@@ -369,7 +370,7 @@ test('image reference removal is recursive, handles legacy flat attachments, and
   assert.equal(migratedItem.id, 'legacy-item');
   assert.equal(record.id, 'event-1');
   assert.equal(Core.stats(migrated.records).total, 3348);
-  assert.deepEqual(migrated.config, source.config);
+  assert.deepEqual(migrated.config, {...source.config,backup_reminder_days:0});
   assert.deepEqual(Core.parseBackup(JSON.stringify(migrated)), migrated);
   assert.ok(!JSON.stringify(migrated).includes('data:image/'));
   assert.equal(JSON.stringify(source), before);
@@ -490,7 +491,7 @@ test('day, week and year trend buckets update the same header through actual bin
 test('member avatars and multi-group profiles survive schema-4 backup and migration remains idempotent', () => {
   const input = { version: 2, app_version: '1.1.2', records: [event()], config: { monthly_budget: 99 } };
   const migrated = Core.validateState(input);
-  assert.equal(migrated.version, 5);
+  assert.equal(migrated.version, 7);
   assert.deepEqual(migrated.members, []);
   const avatar = 'data:image/png;base64,AAAA';
   migrated.members = [{name:'甲',avatar,color:'#123456',groups:['团A','团B','团A'],weibo:'@甲',douyin:'dy-id',xiaohongshu:'xhs-id'}];
@@ -527,7 +528,7 @@ test('photo time ordering, member queries and explicit-versus-profile group attr
   assert.equal(rows.length,3);assert.equal(Core.kind(rows[0].item),'multi');
   assert.equal(Core.interactionRows(data,{photosOnly:true,order:'oldest'})[0].item.total_cost,1);
   assert.equal(Core.interactionRows(data,{photosOnly:true,member:'乙'})[0].item.total_cost,3);
-  assert.equal(Core.interactionRows(data,{group:'团A'}).length,1);
+  assert.equal(Core.interactionRows(data,{group:'团A'}).length,3);
   assert.equal(Core.interactionRows(data,{group:'团B'}).length,0);
   assert.equal(Core.interactionRows(data,{group:'限定团'}).length,1);
   assert.equal(Core.interactionRows(data,{photosOnly:true,start:'2026-10-03',end:'2026-10-03'}).length,1);
@@ -550,7 +551,7 @@ test('profile merge retains local conflicts and adds incoming profiles including
 test('schema 3 social accounts migrate to editable entries and empty accounts remain empty after reload',()=>{
  const old={version:3,app_version:'1.1.3',records:[],members:[{name:'甲',groups:['团A'],weibo:'@旧微博',douyin:'旧抖音',xiaohongshu:'',avatar:''}]};
  const migrated=Core.validateState(old);
- assert.equal(migrated.version,5);assert.equal(migrated.members[0].color,'#FFFFFF');
+ assert.equal(migrated.version,7);assert.equal(migrated.members[0].color,'#FFFFFF');
  assert.deepEqual(migrated.members[0].social_accounts,[{platform:'微博',account:'@旧微博'},{platform:'抖音',account:'旧抖音'}]);
  assert.equal(migrated.members[0].weibo,undefined);
  migrated.members[0].social_accounts=[];
@@ -619,31 +620,31 @@ test('joint organizers each match secondary filters and old single organizer rem
  assert.deepEqual(Core.parseBackup(JSON.stringify(data)),data);
 });
 
-test('event identities override legacy affiliations and cross-group photos filter each participant separately',()=>{
+test('individual interaction identities override activity defaults and legacy affiliations and cross-group photos filter each participant separately',()=>{
  const input=state([event({member_roles:[{member:'甲',group:'团B'},{member:'乙',group:'团A'}],interactions:[
   {id:'multi',cheki_type:'multi',members:['甲','乙'],affiliated_groups:['旧团'],participant_groups:[{member:'甲',group:'旧团'}],tickets:2,total_cost:100},
   {id:'single',member:'甲',tickets:1,total_cost:30}
  ]})],{members:[{name:'甲',groups:['团A','团B']},{name:'乙',groups:['团A']}]});
- assert.equal(Core.interactionRows(input,{group:'团B'}).length,2);
+ assert.equal(Core.interactionRows(input,{group:'团B'}).length,1);
  assert.equal(Core.interactionRows(input,{group:'团A'}).length,1);
  assert.equal(Core.interactionRows(input,{member:'甲',group:'团A'}).length,0);
  assert.equal(Core.interactionRows(input,{member:'乙',group:'团B'}).length,0);
- assert.equal(Core.interactionRows(input,{member:'甲',group:'团B'}).length,2);
+ assert.equal(Core.interactionRows(input,{member:'甲',group:'团B'}).length,1);
  assert.equal(Core.stats(input.records).ticketCount,3);
  assert.equal(Core.stats(input.records).total,13000);
  assert.deepEqual(Core.parseBackup(JSON.stringify(input)),input);
- assert.equal(input.records[0].interactions[0].participant_groups[0].group,'团B');
+ assert.equal(input.records[0].interactions[0].participant_groups[0].group,'旧团');
  input.records[0].member_roles[0].group='';
  const unspecified=Core.validateState(input);
- assert.equal(Core.interactionRows(unspecified,{member:'甲',group:'团B'}).length,0);
+ assert.equal(Core.interactionRows(unspecified,{member:'甲',group:'团B'}).length,1);
  assert.equal(Core.interactionRows(unspecified,{member:'甲'}).length,2);
 });
 
 test('ambiguous multi-group profiles remain unspecified and identity suggestions use unique lineup intersections',()=>{
  const data=state([event({performing_groups:['团B'],interactions:[{member:'甲',tickets:1,total_cost:30}]})],{members:[{name:'甲',groups:['团A','团B']}]});
  const e=data.records[0],item=e.interactions[0];
- assert.deepEqual(Core.identityGroups(item,data,e,'甲'),[]);
- assert.equal(Core.preferredIdentity(item,data,e,'甲'),'团B');
+ assert.deepEqual(Core.identityGroups(item,data,e,'甲'),['团A']);
+ assert.equal(Core.preferredIdentity(item,data,e,'甲'),'团A');
  assert.throws(()=>state([event({member_roles:[{member:'甲',group:'团A'},{member:'甲',group:'团B'}]})]));
  assert.throws(()=>state([event({interactions:[{member:'甲',participant_groups:[{member:'乙',group:'团A'}]}]})]));
 });
@@ -656,4 +657,162 @@ test('statistics omits empty activity types and months but includes free recorde
  const original=globalThis.document;let body='';globalThis.document={querySelector:()=>({})};
  try{globalThis.IdolStats.showMonthly({C:Core,state:data,records:data.records,range:Core.periodRange('year','2026-01-01'),modal:(_,html)=>{body=html;}});assert.equal((body.match(/data-stats-action="month-period"/g)||[]).length,1);assert.ok(body.includes('2026-10'));assert.ok(!body.includes('2026-09'));}
  finally{if(original===undefined)delete globalThis.document;else globalThis.document=original;}
+});
+
+test('v1.2 migration assigns stable identities and fills missing historical groups from the first profile group',()=>{
+ const original={version:5,app_version:'1.1.5',members:[{name:'甲',groups:['团A','团B']},{name:'乙',groups:['团C']}],config:{monthly_budget:999},records:[event({member_roles:[{member:'乙',group:'团C'}],interactions:[{id:'missing',member:'甲',tickets:2,total_cost:80},{id:'explicit',member:'甲',affiliated_group:'团B',tickets:1,total_cost:60},{id:'shared',cheki_type:'multi',members:['甲','乙'],tickets:1,total_cost:90}]})]};
+ const migrated=Core.validateState(original),e=migrated.records[0],id=migrated.members[0].id;
+ assert.equal(migrated.version,7);assert.equal(migrated.app_version,'1.2.3');assert.ok(id);
+ assert.equal(e.interactions[0].member_id,id);assert.equal(e.interactions[0].participant_groups[0].group,'团A');assert.equal(e.interactions[1].participant_groups[0].group,'团B');assert.deepEqual(e.interactions[2].participant_groups.map(role=>role.group),['团A','团C']);
+ assert.equal(Core.stats(migrated.records).total,23000);assert.equal(Core.stats(migrated.records).ticketCount,4);
+ assert.deepEqual(Core.validateState(migrated),migrated);assert.equal(original.records[0].interactions[0].member_id,undefined);
+});
+
+test('identity candidates contain profile and personal historical groups, excluding foreign lineups and other members groups',()=>{
+ const data=state([event({performing_groups:['无关阵容'],interactions:[{member:'甲',affiliated_group:'曾参与团',tickets:1,total_cost:1},{member:'乙',affiliated_group:'乙专属团',tickets:1,total_cost:2}]})],{members:[{name:'甲',groups:['团A','团B']},{name:'乙',groups:['乙专属团']}]});
+ assert.deepEqual(Core.memberGroups(data,'甲'),['团A','团B','曾参与团']);
+ assert.ok(!Core.memberGroups(data,'甲').includes('无关阵容'));assert.ok(!Core.memberGroups(data,'甲').includes('乙专属团'));
+});
+
+test('same-name members remain independent in individual filters rankings and shared photos',()=>{
+ const data=state([event({interactions:[{member:'同名',member_id:'person-a',tickets:1,total_cost:30},{member:'同名',member_id:'person-b',tickets:2,total_cost:80},{cheki_type:'multi',members:['同名','同名'],member_ids:['person-a','person-b'],tickets:1,total_cost:101}]})],{members:[{id:'person-a',name:'同名',groups:['团A']},{id:'person-b',name:'同名',groups:['团B']}]});
+ assert.equal(Core.memberMetrics(data).length,2);assert.equal(Core.stats(data.records).ranking.length,2);
+ assert.equal(Core.interactionRows(data,{member:'person-a'}).length,2);assert.equal(Core.interactionRows(data,{member:'person-b'}).length,2);
+ assert.throws(()=>Core.resolveMember(data,'同名'));assert.notEqual(Core.memberLabel(data.members[0],data),Core.memberLabel(data.members[1],data));
+ const renamed=Core.renameMember(Core.clone(data),'person-a','甲新');assert.equal(renamed.records[0].interactions[0].member,'甲新');assert.equal(renamed.records[0].interactions[1].member,'同名');assert.deepEqual(renamed.records[0].interactions[2].members,['甲新','同名']);assert.equal(Core.resolveMember(Core.validateState(renamed),'person-a').aliases[0],'同名');
+});
+
+test('merging duplicate identities preserves transaction amounts and physical quantities while collapsing self-shared photos',()=>{
+ const data=state([event({interactions:[{member:'旧档案',member_id:'source',tickets:1,total_cost:50},{cheki_type:'multi',members:['旧档案','主档案'],member_ids:['source','target'],tickets:2,total_cost:101}]})],{members:[{id:'source',name:'旧档案',groups:['旧团']},{id:'target',name:'主档案',groups:['现团']}]});
+ const totals=Core.stats(data.records),merged=Core.mergeMember(data,'source','target');
+ assert.equal(merged.members.length,1);assert.equal(Core.stats(merged.records).total,totals.total);assert.equal(Core.stats(merged.records).ticketCount,totals.ticketCount);assert.equal(Core.kind(merged.records[0].interactions[1]),'individual');assert.equal(Core.memberMetrics(merged)[0].count,3);assert.ok(merged.members[0].aliases.includes('旧档案'));assert.deepEqual(Core.parseBackup(JSON.stringify(merged)),merged);
+});
+
+test('footprints exclude placeholder locations without removing free visits or affecting spending',()=>{
+ const excluded=['/','线上','未统计','未指定 / 线上','-','线上/邮寄','未知城市'];
+ const data=state([...excluded.map((name,index)=>event({id:'excluded-'+index,city:name,venue:name,ticket_fee:100})),event({id:'physical',city:'东京',venue:'示例场馆',ticket_fee:0})]);
+ const stats=Core.stats(data.records);assert.equal(stats.total,excluded.length*10000);assert.deepEqual(stats.cities.map(row=>row.name),['东京']);assert.deepEqual(stats.venues.map(row=>row.name),['示例场馆']);assert.equal(stats.cities[0].count,1);assert.equal(stats.cities[0].cost,0);
+});
+
+test('custom benefits and dimensional price presets apply by specificity with historical price snapshots retained',()=>{
+ const data=state([event({interactions:[{member:'甲',benefit_format:'custom:wide',photo_size:'5',signature:'signed',is_theme:true,tickets:2,total_cost:123,price_per_ticket:80}]})],{members:[{name:'甲',groups:['团A']}],config:{benefit_types:[{id:'wide',label:'宽幅切',counts_as_photo:true}],price_presets:[{id:'all',name:'通用',scope:'all',target:'',format:'custom:wide',price:60},{id:'group',name:'团价',scope:'group',target:'团A',format:'custom:wide',price:70},{id:'member',name:'成员价',scope:'member',target:Core.legacyMemberId('甲'),format:'custom:wide',size:'5',signature:'signed',themed:true,price:80}]}});
+ assert.equal(Core.presetPrice(data,{member:data.members[0].id,group:'团A',format:'custom:wide',size:'5',signature:'signed',themed:true}).price,80);
+ assert.equal(Core.presetPrice(data,{member:data.members[0].id,group:'团A',format:'custom:wide',size:'3',signature:'signed',themed:false}).price,70);
+ assert.equal(Core.interactionRows(data,{photosOnly:true}).length,1);assert.match(Core.benefitLabel(data.records[0].interactions[0],data,data.records[0]),/宽幅切.*5寸.*有签.*主题/);
+ data.config.price_presets[2].price=999;assert.equal(Core.stats(Core.validateState(data).records).total,12300);
+});
+
+test('calendar annual review member details and ticket summaries use their stated date bases',()=>{
+ const data=state([event({date:'2026-12-31',city:'北京',ticket_fee:100,ticket_quantity:2,ticket_type:'预售',interactions:[{member:'甲',tickets:2,total_cost:80,shot_at:'2027-01-01T00:30'}]}),event({id:'free',date:'2026-12-30',city:'线上',ticket_fee:0,ticket_quantity:1,ticket_is_free:true,ticket_type:'免费票',interactions:[{member:'乙',tickets:1,total_cost:0}]})]);
+ const review=Core.annualSummary(data,'2026');assert.equal(review.stats.total,18000);assert.equal(review.cities,1);assert.equal(review.tickets.quantity,3);assert.equal(review.tickets.free,1);assert.deepEqual(review.members.map(member=>member.name),['乙']);
+ const jan=Core.calendarSummary(data,'2027-01')[0];assert.equal(jan.date,'2027-01-01');assert.equal(jan.events.length,0);assert.equal(jan.photos,2);assert.equal(jan.total,0);
+ const summary=Core.memberSummary(data,'甲',{start:'2027-01-01',end:'2027-12-31'});assert.equal(summary.count,2);assert.equal(summary.days,1);assert.equal(summary.cost,8000);assert.equal(summary.first,'2027-01-01T00:30');
+});
+
+test('activity and cheki attachments survive repeated migrations and backup merging with strict validation',()=>{
+ const photo={id:'picture',data:'data:image/png;base64,AAAA',caption:'纪念照'};
+ const data=state([event({attachments:[photo],interactions:[{member:'甲',tickets:1,total_cost:50,attachments:[{...photo,id:'cheki-picture'}]}]})]);
+ const restored=Core.parseBackup(JSON.stringify(data));assert.deepEqual(restored,data);assert.equal(restored.records[0].attachments[0].data,photo.data);assert.equal(restored.records[0].interactions[0].attachments[0].caption,'纪念照');assert.equal(Core.mergeStates(data,restored).skipped,1);
+ assert.throws(()=>state([event({attachments:[{id:'bad',data:'data:image/svg+xml;base64,AAAA'}]})]));assert.throws(()=>state([event({attachments:[photo,photo]})]));assert.throws(()=>state([event({attachments:Array.from({length:21},(_,index)=>({...photo,id:String(index)}))})]));
+});
+
+test('historical price suggestions distinguish same-name members by stable ID',()=>{
+ const data=state([event({interactions:[{member:'同名',member_id:'a',tickets:1,price_per_ticket:30,total_cost:30},{member:'同名',member_id:'b',tickets:1,price_per_ticket:80,total_cost:80}]})],{members:[{id:'a',name:'同名',groups:['团A']},{id:'b',name:'同名',groups:['团B']}]});assert.deepEqual(Core.prices(data.records,'a','individual','cheki','performance'),[30]);assert.deepEqual(Core.prices(data.records,'b','individual','cheki','performance'),[80]);
+});
+
+test('renamed member aliases match activity and photo searches without mixing distinct IDs',()=>{
+ const data=state([event({interactions:[{member:'甲',tickets:1,total_cost:50}]})],{members:[{name:'甲',groups:['团A']}]});const renamed=Core.validateState(Core.renameMember(Core.clone(data),data.members[0].id,'新名'));assert.equal(Core.interactionRows(renamed,{query:'甲'}).length,1);assert.equal(Core.filterRecords(renamed.records,{state:renamed,query:'甲'}).length,1);assert.equal(Core.preferredIdentity({participant_groups:[{member:'新名',member_id:renamed.members[0].id,group:''}]},renamed,renamed.records[0],renamed.members[0].id),'');
+});
+
+test('profile merge retains unique social accounts notes and original state on validation failure',()=>{
+ const data=state([event({interactions:[{member:'来源',member_id:'source',tickets:1,total_cost:50}]})],{members:[{id:'source',name:'来源',note:'来源备注',social_accounts:[{platform:'平台A',account:'甲'}]},{id:'target',name:'保留',note:'保留备注',social_accounts:[{platform:'平台B',account:'乙'}]}]});const before=JSON.stringify(data),merged=Core.mergeMember(data,'source','target');assert.equal(JSON.stringify(data),before);assert.equal(merged.members[0].social_accounts.length,2);assert.match(merged.members[0].note,/来源备注/);assert.match(merged.members[0].note,/保留备注/);
+ const large=Core.clone(data);large.members.forEach((profile,index)=>{profile.social_accounts=Array.from({length:20},(_,n)=>({platform:'平台'+index,account:String(n)}));});const largeBefore=JSON.stringify(large);assert.throws(()=>Core.mergeMember(large,'source','target'));assert.equal(JSON.stringify(large),largeBefore);
+});
+
+test('price recommendations honor selected photo dimensions while shared photos use their own recorded prices',()=>{
+ const data=state([event({interactions:[{member:'甲',tickets:1,total_cost:30,photo_size:'3',signature:'signed',is_theme:false},{member:'甲',tickets:1,total_cost:80,photo_size:'5',signature:'signed',is_theme:true}]})]);const id=Core.legacyMemberId('甲');assert.deepEqual(Core.prices(data.records,id,'individual','cheki','performance',5,{size:'5',signature:'signed',themed:true}),[80]);assert.deepEqual(Core.prices(data.records,id,'individual','cheki','performance',5,{size:'3',signature:'signed',themed:false}),[30]);
+});
+
+test('same-name labels remain unambiguous even when explicit member IDs share the same suffix',()=>{
+ const data=state([],{members:[{id:'first-suffix',name:'同名',groups:['同团']},{id:'second-suffix',name:'同名',groups:['同团']}]});const labels=data.members.map(profile=>Core.memberLabel(profile,data));assert.notEqual(labels[0],labels[1]);assert.equal(Core.resolveMember(data,labels[0]).id,'first-suffix');assert.equal(Core.resolveMember(data,labels[1]).id,'second-suffix');
+});
+
+test('unassigned ticket types infer free or paid from combined ticket and Drink spending',()=>{
+ const data=state([event({id:'free',event_type:'performance',ticket_fee:0,drink_fee:0,ticket_type:'未设票种',ticket_quantity:0}),event({id:'drink',event_type:'performance',ticket_fee:0,drink_fee:30,ticket_type:'',ticket_quantity:0}),event({id:'paid',event_type:'performance',ticket_fee:100,drink_fee:20,ticket_type:'',ticket_quantity:2})]);const tickets=Core.ticketSummary(data.records);assert.equal(tickets.quantity,4);assert.equal(tickets.free,1);assert.equal(tickets.paid,3);assert.equal(tickets.cost,15000);assert.deepEqual(tickets.types.map(type=>type.name).sort(),['付费','免费']);assert.equal(data.records.find(event=>event.id==='drink').ticket_is_free,false);assert.equal(Core.stats(data.records).total,15000);
+});
+
+test('phone photos bind members but do not inflate cheki quantities or the hundred-cheki milestone',()=>{
+ const data=state([event({interactions:[{member:'甲',type:'phone',tickets:2,total_cost:30},{member:'甲',type:'cheki',tickets:88,total_cost:1760}]})]);const totals=Core.stats(data.records);assert.equal(totals.total,179000);assert.equal(totals.ticketCount,88);assert.equal(totals.phoneCount,2);const metrics=Core.memberMetrics(data)[0];assert.equal(metrics.count,88);assert.equal(metrics.phone_count,2);assert.equal(metrics.cost,179000);assert.equal(Core.interactionRows(data,{photosOnly:true}).length,1);assert.equal(Core.interactionRows(data,{member:Core.legacyMemberId('甲')}).length,2);
+});
+
+test('member interaction month summaries are sorted newest first',()=>{
+ const data=state([{...event({id:'older',interactions:[{member:'甲',tickets:1,total_cost:10}]}),date:'2026-01-01'},{...event({id:'newer',interactions:[{member:'甲',tickets:1,total_cost:10}]}),date:'2026-11-01'}]);assert.deepEqual(Core.memberSummary(data,'甲').months.map(row=>row.name),['2026-11','2026-01']);
+});
+
+test('local photo references survive backup normalization and arbitrary external URLs are rejected',()=>{
+ const url='https://idol.local/photos/'+'a'.repeat(64)+'.jpg';const data=state([event({attachments:[{id:'photo',data:url,caption:'活动照片'}]})]);assert.equal(Core.parseBackup(JSON.stringify(data)).records[0].attachments[0].data,url);assert.throws(()=>state([event({attachments:[{id:'bad',data:'https://example.com/picture.jpg'}]})]));
+});
+
+test('phone photos support group targets and legacy benefit_format=phone without inflating cheki/benefit totals or forms',()=>{
+ const data=state([event({interactions:[
+  {member:'甲',type:'phone',tickets:2,total_cost:30},
+  {type:'phone',cheki_type:'group',group_name:'团A',tickets:1,total_cost:50},
+  {member:'甲',type:'cheki',benefit_format:'phone',tickets:3,total_cost:60},
+  {member:'甲',type:'cheki',benefit_format:'cheki',tickets:4,total_cost:200}
+ ]})]);
+ const s=Core.stats(data.records);
+ assert.equal(s.total,34000);
+ assert.equal(s.ticketCount,4);
+ assert.equal(s.phoneCount,6);
+ assert.equal(s.benefit,20000);
+ assert.equal(s.phone,14000);
+ assert.deepEqual(Object.keys(s.forms),['cheki']);
+ const summary=Core.memberSummary(data,'甲');
+ assert.equal(summary.count,4);
+ assert.equal(summary.phoneCount,5);
+ assert.deepEqual(summary.forms,[{name:'普通切',count:4}]);
+ assert.deepEqual(summary.months,[{name:'2026-10',count:4}]);
+ const groupMetrics=Core.memberMetrics(data,{kind:'group'});
+ assert.equal(groupMetrics.length,1);
+ assert.equal(groupMetrics[0].name,'团A');
+ assert.equal(groupMetrics[0].count,0);
+ assert.equal(groupMetrics[0].phone_count,1);
+ assert.equal(groupMetrics[0].cost,5000);
+ assert.equal(Core.groupSummary(data,'团A').records,1);
+ assert.equal(Core.calendarSummary(data,'2026-10')[0].photos,4);
+});
+
+test('organizerCatalog and renameOrganizer update records, deduplicate joint organizers, and preserve config',()=>{
+ const data=state([
+  event({id:'e1',organizer:'旧社',organizers:['旧社','联合社']}),
+  event({id:'e2',organizer:'旧社'}),
+  event({id:'e3',organizer:'无关社'})
+ ],{config:{monthly_budget:0,backup_reminder_days:0,organizers:['旧社','未使用社']}});
+ assert.deepEqual(Core.organizerCatalog(data).sort(),['旧社','联合社','未使用社','无关社'].sort());
+ assert.throws(()=>Core.renameOrganizer(data,'旧社','旧社'));
+ assert.throws(()=>Core.renameOrganizer(data,'旧社','甲,乙'));
+ assert.throws(()=>Core.renameOrganizer(data,'','新社'));
+ const renamed=Core.renameOrganizer(data,'旧社','联合社');
+ assert.equal(renamed.updated,2);
+ assert.deepEqual(Core.eventOrganizers(renamed.state.records[0]),['联合社']);
+ assert.equal(renamed.state.records[0].organizer,'联合社');
+ assert.deepEqual(Core.eventOrganizers(renamed.state.records[1]),['联合社']);
+ assert.deepEqual(Core.eventOrganizers(renamed.state.records[2]),['无关社']);
+ assert.ok(!Core.organizerCatalog(renamed.state).includes('旧社'));
+ assert.ok(Core.organizerCatalog(renamed.state).includes('联合社'));
+ assert.ok(Core.organizerCatalog(renamed.state).includes('未使用社'));
+ const incoming=state([],{config:{organizers:['外部预设']}});
+ const merged=Core.mergeStates(renamed.state,incoming);
+ assert.ok(Core.organizerCatalog(merged.state).includes('外部预设'));
+ assert.ok(Core.organizerCatalog(merged.state).includes('未使用社'));
+});
+
+test('upgrading a group phone photo stamped with legacy unknown member cleans synthetic participant_groups',()=>{
+ const legacy={format:'idol-tracker-backup',version:7,app_version:'1.2.1',members:[{id:'person-unknown',name:'未知成员',groups:[]}],records:[event({id:'ev-1',member_roles:[{member:'未知成员',member_id:'person-unknown',group:''}],interactions:[{id:'ph-1',type:'phone',cheki_type:'group',group_name:'团A',member:'未知成员',member_id:'person-unknown',participant_groups:[{member:'未知成员',member_id:'person-unknown',group:''}],tickets:1,total_cost:50}]})]};
+ const migrated=Core.validateState(legacy);
+ assert.equal(Core.isGroupItem(migrated.records[0].interactions[0]),true);
+ assert.equal(migrated.records[0].interactions[0].member,undefined);
+ assert.equal(migrated.records[0].interactions[0].participant_groups.length,0);
+ assert.equal(Core.stats(migrated.records).phoneCount,1);
+ assert.equal(Core.stats(migrated.records).ticketCount,0);
 });
