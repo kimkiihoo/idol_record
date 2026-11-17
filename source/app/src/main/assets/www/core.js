@@ -6,8 +6,8 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
   const FORMAT = 'idol-tracker-backup';
-  const SCHEMA_VERSION = 2;
-  const APP_VERSION = '1.1.2';
+  const SCHEMA_VERSION = 5;
+  const APP_VERSION = '1.1.5';
   const MAX_MONEY = 99999999999999;
   const IMAGE_FIELDS = new Set(['image', 'image_name', 'photo', 'photo_name', 'images', 'photos', 'image_files', 'image_data', 'photo_data', 'image_url', 'photo_url', 'image_path', 'photo_path']);
   const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
@@ -22,6 +22,7 @@
     if (plain(value)) {
       const out = {};
       for (const key of Object.keys(value)) {
+        if (omitImages && depth === 0 && key === 'members') { out[key] = clone(value[key], depth + 1, false); continue; }
         if (omitImages && (IMAGE_FIELDS.has(key.toLowerCase()) || imageData(value[key]))) continue;
         if (['__proto__', 'constructor', 'prototype'].includes(key)) fail('备份包含不安全的字段名称');
         out[key] = clone(value[key], depth + 1, omitImages);
@@ -80,10 +81,171 @@
     return (a >>> 0).toString(16).padStart(8, '0') + (b >>> 0).toString(16).padStart(8, '0');
   }
   function kind(item) {
-    return item.type === 'merch' ? 'merch' : item.type === 'group' || item.cheki_type === 'group' ? 'group' : 'individual';
+    if (item.type === 'merch') return 'merch';
+    if (item.type === 'group' || item.cheki_type === 'group') return 'group';
+    return item.cheki_type === 'multi' ? 'multi' : 'individual';
   }
-  function form(item, eventType) {
-    return item.benefit_format || (eventType === 'theme_homework' || item.type === 'theme_homework' ? 'homework' : eventType === 'online_cheki' ? 'online' : 'cheki');
+  function names(value) {
+    const source = Array.isArray(value) ? value : String(value || '').split(/[,，、;；\n]/);
+    return Array.from(new Set(source.map(name => String(name).trim()).filter(Boolean)));
+  }
+  function participants(item) {
+    if (kind(item) === 'multi') return names(item.members);
+    return kind(item) === 'individual' ? [String(item.member || '未知成员')] : [];
+  }
+  function itemName(item) {
+    if (kind(item) === 'multi') return participants(item).join(' / ');
+    return String(item.member || item.group_name || item.item_name || '未命名');
+  }
+  function validateMembers(input) {
+    if (input == null) return [];
+    if (!Array.isArray(input)) fail('成员档案必须为列表');
+    const seen = new Set();
+    return input.map(profile => {
+      if (!plain(profile) || typeof profile.name !== 'string' || !profile.name.trim()) fail('请填写成员姓名');
+      const clean = clone(profile, 1, true);
+      clean.avatar = profile.avatar || '';
+      clean.name = clean.name.trim();
+      if (clean.name.length > 300 || seen.has(clean.name)) fail('成员姓名重复或过长');
+      seen.add(clean.name);
+      clean.groups = names(clean.groups);
+      clean.color = clean.color || '#FFFFFF';
+      if (!/^#[0-9a-fA-F]{6}$/.test(clean.color)) fail('应援色须为六位颜色值');
+      clean.avatar = clean.avatar || '';
+      if (typeof clean.avatar !== 'string' || clean.avatar.length > 250000 || clean.avatar && !/^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(clean.avatar)) fail('头像格式无效或超过大小限制');
+      for (const key of ['weibo', 'douyin', 'xiaohongshu', 'note']) {
+        if (clean[key] == null) clean[key] = '';
+        if (typeof clean[key] !== 'string' || clean[key].length > 2000) fail('成员资料字段格式错误');
+      }
+      if (!own(clean, 'social_accounts')) {
+        clean.social_accounts = [['微博', clean.weibo], ['抖音', clean.douyin], ['小红书', clean.xiaohongshu]]
+          .filter(row => row[1]).map(row => ({ platform: row[0], account: row[1] }));
+      }
+      if (!Array.isArray(clean.social_accounts) || clean.social_accounts.length > 32) fail('社媒账号须为列表，最多 32 条');
+      clean.social_accounts = clean.social_accounts.map(account => {
+        if (!plain(account) || typeof account.platform !== 'string' || typeof account.account !== 'string') fail('社媒账号格式错误');
+        const platform = account.platform.trim(), value = account.account.trim();
+        if (!platform || !value || platform.length > 80 || value.length > 2000) fail('请完整填写社媒平台和账号');
+        return { platform, account: value };
+      });
+      delete clean.weibo; delete clean.douyin; delete clean.xiaohongshu;
+      return clean;
+    });
+  }
+  function memberCatalog(state) {
+    const catalog = new Map((state.members || []).map(profile => [profile.name, clone(profile)]));
+    for (const event of state.records) for (const item of event.interactions || []) {
+      for (const name of participants(item)) {
+        if (!catalog.has(name)) catalog.set(name, { name, groups: [], color: '#FFFFFF', avatar: '', social_accounts: [], note: '' });
+      }
+    }
+    return Array.from(catalog.values()).sort((a, b) => a.name.localeCompare(b.name, 'zh'));
+  }
+  function groupCatalog(state) {
+    const groups = (state.members || []).flatMap(profile => profile.groups || []);
+    for (const event of state.records) {
+      groups.push(...names(event.performing_groups), ...(event.member_roles || []).map(role => role.group));
+      for (const item of event.interactions || []) {
+        groups.push(...names(item.affiliated_groups), ...names(item.affiliated_group), ...(item.participant_groups || []).map(role => role.group));
+        if (kind(item) === 'group') groups.push(String(item.group_name || '未知团体'));
+      }
+    }
+    return names(groups).sort((a, b) => a.localeCompare(b, 'zh'));
+  }
+  function memberMetrics(state, options) {
+    options = options || {};
+    const rows = interactionRows(state, options);
+    const metrics = new Map();
+    if (options.kind !== 'group') for (const profile of memberCatalog(state)) metrics.set(profile.name, { name: profile.name, count: 0, cost: 0, last_date: '' });
+    for (const row of rows) {
+      const group = kind(row.item) === 'group';
+      if (group !== (options.kind === 'group')) continue;
+      const targets = group ? [String(row.item.group_name || '未知团体')] : participants(row.item);
+      const cost = itemTotal(row.item);
+      targets.forEach((name, index) => {
+        if (!metrics.has(name)) metrics.set(name, { name, count: 0, cost: 0, last_date: '' });
+        const target = metrics.get(name);
+        target.count = safe(target.count + count(row.item));
+        target.cost = safe(target.cost + Math.floor(cost / targets.length) + (index < cost % targets.length ? 1 : 0));
+        if (row.date > target.last_date) target.last_date = row.date;
+      });
+    }
+    const order = options.sort || 'count';
+    return Array.from(metrics.values()).sort((a, b) => {
+      const latest = b.last_date.localeCompare(a.last_date);
+      if (order === 'latest') return latest || b.count - a.count || a.name.localeCompare(b.name, 'zh');
+      return (order === 'cost' ? b.cost - a.cost : b.count - a.count) || latest || a.name.localeCompare(b.name, 'zh');
+    });
+  }
+  function eventOrganizers(event) {
+    return names(event.organizers == null ? event.organizer : event.organizers);
+  }
+  function normalizeRoles(input) {
+    if (!Array.isArray(input)) fail('成员活动身份须为列表');
+    const seen = new Set();
+    return input.map(role => {
+      if (!plain(role) || typeof role.member !== 'string' || typeof role.group !== 'string') fail('成员活动身份格式错误');
+      const member = role.member.trim(), group = role.group.trim();
+      if (!member || member.length > 300 || group.length > 300 || seen.has(member)) fail('成员活动身份重复或名称过长');
+      seen.add(member);
+      return { member, group };
+    });
+  }
+  function identityGroups(item, state, event, member) {
+    const activityRole = (event && event.member_roles || []).find(role => role.member === member);
+    if (activityRole) return activityRole.group ? [activityRole.group] : [];
+    const recordedRole = (item.participant_groups || []).find(role => role.member === member);
+    if (recordedRole) return recordedRole.group ? [recordedRole.group] : [];
+    const explicit = names(item.affiliated_groups).length ? names(item.affiliated_groups) : names(item.affiliated_group);
+    if (explicit.length) return explicit;
+    const profile = (state.members || []).find(profile => profile.name === member);
+    const groups = profile ? profile.groups : [];
+    return groups.length === 1 ? groups.slice() : [];
+  }
+  function preferredIdentity(item, state, event, member) {
+    const activityRole = (event.member_roles || []).find(role => role.member === member);
+    if (activityRole) return activityRole.group;
+    const savedRole = (item.participant_groups || []).find(role => role.member === member);
+    if (savedRole) return savedRole.group;
+    const explicit = names(item.affiliated_groups).length ? names(item.affiliated_groups) : names(item.affiliated_group);
+    if (explicit.length === 1) return explicit[0];
+    for (const old of event.interactions || []) {
+      if (!participants(old).includes(member)) continue;
+      const groups = identityGroups(old, state, event, member);
+      if (groups.length === 1) return groups[0];
+    }
+    const profile = (state.members || []).find(profile => profile.name === member);
+    const groups = profile ? profile.groups : [];
+    const performing = groups.filter(group => names(event.performing_groups).includes(group));
+    return performing.length === 1 ? performing[0] : groups.length === 1 ? groups[0] : '';
+  }
+  function interactionGroups(item, state, event) {
+    if (kind(item) === 'group') return names(item.group_name);
+    return names(participants(item).flatMap(member => identityGroups(item, state, event, member)));
+  }
+  function interactionRows(state, options) {
+    options = options || {};
+    const rows = [];
+    state.records.forEach((event, eventIndex) => (event.interactions || []).forEach((item, itemIndex) => {
+      if (kind(item) === 'merch') return;
+      if (options.photosOnly && !['cheki', 'signed', 'unsigned', 'online', 'theme'].includes(form(item, event.event_type, event))) return;
+      if (options.member && !participants(item).includes(options.member)) return;
+      if (options.group && !(options.member ? identityGroups(item, state, event, options.member) : interactionGroups(item, state, event)).includes(options.group)) return;
+      const date = item.shot_at || event.date;
+      const periodDate = options.dateBasis === 'activity' ? event.date : date.slice(0, 10);
+      if (options.start && periodDate < options.start || options.end && periodDate > options.end) return;
+      if (options.query && !search({ event, item }, options.query, options.pinyin)) return;
+      rows.push({ event, item, eventIndex, itemIndex, date, groups: interactionGroups(item, state, event) });
+    }));
+    const direction = options.order === 'oldest' ? 1 : -1;
+    return rows.sort((a, b) => direction * (a.date.localeCompare(b.date) || String(a.item.created_at || '').localeCompare(String(b.item.created_at || '')) || b.eventIndex - a.eventIndex || a.itemIndex - b.itemIndex));
+  }
+  function form(item, eventType, event) {
+    const saved = item.benefit_format;
+    const legacyHomework = saved === 'homework' || !saved && (eventType === 'theme_homework' || item.type === 'theme_homework');
+    const description = [event && event.event_name, item.note].filter(value => typeof value === 'string').join(' ');
+    if (legacyHomework && /主题\s*(?:切|拍立得|cheki)/i.test(description)) return 'theme';
+    return saved || (eventType === 'theme_homework' || item.type === 'theme_homework' ? 'homework' : eventType === 'online_cheki' ? 'online' : 'cheki');
   }
   function count(item) { return quantity(kind(item) === 'merch' ? (item.quantity == null ? 1 : item.quantity) : (item.tickets == null ? (item.quantity == null ? 1 : item.quantity) : item.tickets)); }
   function itemTotal(item) {
@@ -111,6 +273,10 @@
       if (ids.has(event.id)) fail('备份含重复活动 ID：' + event.id);
       ids.add(event.id);
       event.event_type = event.event_type || 'performance';
+      if (event.organizer != null && (typeof event.organizer !== 'string' || event.organizer.length > 2000)) fail('主办事务所格式错误');
+      if (event.organizers != null) { event.organizers = names(event.organizers); if (event.organizers.some(name => name.length > 300)) fail('主办事务所名称过长'); }
+      if (event.member_roles != null) event.member_roles = normalizeRoles(event.member_roles);
+      if (event.performing_groups != null) event.performing_groups = names(event.performing_groups);
       if (typeof event.event_type !== 'string') fail('活动类型无效');
       for (const key of ['ticket_fee', 'drink_fee']) event[key] = amount(cents(event[key] == null ? 0 : event[key]));
       if (event.interactions === undefined) event.interactions = [];
@@ -123,6 +289,23 @@
         if (item.id != null) {
           if (typeof item.id !== 'string' || !item.id || item.id.length > 512 || itemIds.has(item.id)) fail('消费明细 ID 无效或重复');
           itemIds.add(item.id);
+        }
+        if (kind(item) === 'multi') {
+          item.members = names(item.members);
+          if (item.members.length < 2) fail('多人合影至少选择两位不同成员');
+        }
+        if (item.shot_at) {
+          if (typeof item.shot_at !== 'string' || !/^\d{4}-\d{2}-\d{2}(?:T(?:[01]\d|2[0-3]):[0-5]\d)?$/.test(item.shot_at)) fail('拍摄时间格式错误');
+          validDate(item.shot_at.slice(0, 10));
+        }
+        if (item.participant_groups != null) {
+          item.participant_groups = normalizeRoles(item.participant_groups);
+          if (item.participant_groups.some(role => !participants(item).includes(role.member))) fail('身份信息中的成员不在本条互动中');
+        }
+        if (event.member_roles && participants(item).some(member => event.member_roles.some(role => role.member === member))) {
+          const roles = new Map((item.participant_groups || []).map(role => [role.member, role]));
+          for (const role of event.member_roles) if (participants(item).includes(role.member)) roles.set(role.member, clone(role));
+          item.participant_groups = Array.from(roles.values());
         }
         const n = count(item);
         if (kind(item) === 'merch') item.quantity = n;
@@ -142,11 +325,12 @@
     const state = clone(input, 0, true);
     if (!plain(state)) fail('备份格式不正确');
     if (state.format != null && state.format !== FORMAT) fail('这不是偶像活动备份文件');
-    if (state.version != null && ![1, SCHEMA_VERSION].includes(state.version)) fail('暂不支持此备份版本');
+    if (state.version != null && ![1, 2, 3, 4, SCHEMA_VERSION].includes(state.version)) fail('暂不支持此备份版本');
     state.format = FORMAT;
     state.version = SCHEMA_VERSION;
     state.app_version = APP_VERSION;
     state.records = normalizeRecords(state.records);
+    state.members = validateMembers(state.members);
     if (state.config == null) state.config = {};
     if (!plain(state.config)) fail('设置格式错误');
     if (state.config.monthly_budget != null) state.config.monthly_budget = amount(cents(state.config.monthly_budget));
@@ -157,7 +341,7 @@
     return state;
   }
   function createEmptyState() {
-    return { format: FORMAT, version: SCHEMA_VERSION, app_version: APP_VERSION, records: [], config: { monthly_budget: 0 }, assets: { images: {} } };
+    return { format: FORMAT, version: SCHEMA_VERSION, app_version: APP_VERSION, records: [], members: [], config: { monthly_budget: 0 }, assets: { images: {} } };
   }
   function parseBackup(text, currentConfig) {
     if (typeof text !== 'string') fail('备份内容必须为文本');
@@ -177,11 +361,12 @@
       types.set(eventType, (types.get(eventType) || 0) + 1);
       const city = String(event.city || '未知城市'), venue = String(event.venue || '未知场地');
       const venueKey = city + '\u0000' + venue;
-      if (!cities.has(city)) cities.set(city, { name: city, cost: 0, count: 0 });
-      if (!venues.has(venueKey)) venues.set(venueKey, { name: venue, city, cost: 0, count: 0 });
+      if (!cities.has(city)) cities.set(city, { name: city, cost: 0, count: 0, last_date: '' });
+      if (!venues.has(venueKey)) venues.set(venueKey, { name: venue, city, cost: 0, count: 0, last_date: '' });
       for (const row of [cities.get(city), venues.get(venueKey)]) {
         row.cost = safe(row.cost + eventTotal(event));
         row.count++;
+        if (event.date > row.last_date) row.last_date = event.date;
       }
       for (const item of event.interactions || []) {
         const k = kind(item), cost = itemTotal(item), n = count(item);
@@ -197,18 +382,24 @@
         }
         if (k !== 'merch') {
           out.ticketCount = safe(out.ticketCount + n);
-          const format = String(form(item, eventType));
+          const format = String(form(item, eventType, event));
           if (!forms.has(format)) forms.set(format, { cost: 0, count: 0 });
           const formatRow = forms.get(format);
           formatRow.cost = safe(formatRow.cost + cost);
           formatRow.count = safe(formatRow.count + n);
-          const name = String(k === 'group' ? (item.group_name || '未知团体') : (item.member || '未知成员'));
-          const key = k + '\u0000' + name;
-          if (!ranks.has(key)) ranks.set(key, { name, kind: k, cost: 0, count: 0, last_date: '' });
-          const row = ranks.get(key);
-          row.cost = safe(row.cost + cost);
-          row.count = safe(row.count + n);
-          if (event.date > row.last_date) row.last_date = event.date;
+          const memberNames = k === 'group' ? [String(item.group_name || '未知团体')] : participants(item);
+          memberNames.forEach((name, index) => {
+            const rankKind = k === 'group' ? 'group' : 'individual';
+            const key = rankKind + '\u0000' + name;
+            if (!ranks.has(key)) ranks.set(key, { name, kind: rankKind, cost: 0, count: 0, last_date: '' });
+            const row = ranks.get(key);
+            // Split shared photo cost in integer cents while counting participation for every member.
+            const share = Math.floor(cost / memberNames.length) + (index < cost % memberNames.length ? 1 : 0);
+            row.cost = safe(row.cost + share);
+            row.count = safe(row.count + n);
+            const date = item.shot_at ? item.shot_at.slice(0, 10) : event.date;
+            if (date > row.last_date) row.last_date = date;
+          });
         }
       }
     }
@@ -230,7 +421,7 @@
       if (['city', 'venue', 'event_name'].includes(field)) values = [[event[field], 1]];
       else {
         const expected = { member: 'individual', group: 'group', group_name: 'group', item_name: 'merch' }[field];
-        values = (event.interactions || []).filter(item => kind(item) === expected).map(item => [item[field === 'group' ? 'group_name' : field], count(item)]);
+        values = (event.interactions || []).flatMap(item => field === 'member' ? participants(item).map(name => [name, count(item)]) : kind(item) === expected ? [[item[field === 'group' ? 'group_name' : field], count(item)]] : []);
       }
       for (const [name, n] of values) {
         if (typeof name !== 'string' || !name || ['-', '无', '未知', '未命名活动'].includes(name)) continue;
@@ -252,7 +443,7 @@
     const candidates = [];
     for (const event of records) {
       for (const item of event.interactions || []) {
-        if (kind(item) !== expectedKind || item[key] !== name || expectedKind !== 'merch' && form(item, event.event_type || 'performance') !== expectedForm) continue;
+        if (kind(item) !== expectedKind || (expectedKind === 'multi' ? canonical(participants(item).slice().sort()) !== canonical(names(name).sort()) : item[key] !== name) || expectedKind !== 'merch' && form(item, event.event_type || 'performance', event) !== expectedForm) continue;
         let price = item[expectedKind === 'merch' ? 'price' : 'price_per_ticket'];
         try {
           let value;
@@ -274,7 +465,7 @@
     function walk(value) {
       if (typeof value === 'string' || typeof value === 'number') pieces.push(String(value));
       else if (Array.isArray(value)) value.forEach(walk);
-      else if (plain(value)) for (const [key, item] of Object.entries(value)) if (!['id', 'image', 'created_at'].includes(key)) walk(item);
+      else if (plain(value)) for (const [key, item] of Object.entries(value)) if (!['id', 'image', 'avatar', 'created_at'].includes(key)) walk(item);
     }
     walk(record);
     return pieces.some(value => {
@@ -300,7 +491,7 @@
       else if (/^\d{4}-(?:0[1-9]|1[0-2])$/.test(period) && Number(period.slice(0, 4)) > 0) predicate = e => e.date.startsWith(period);
       else fail('时间范围格式须为 YYYY、YYYY-MM 或 YYYY-Q1');
     }
-    return records.filter(event => (!options.type || options.type === 'all' || (event.event_type || 'performance') === options.type) && predicate(event) && search(event, options.query, options.pinyin)).sort((a, b) => b.date.localeCompare(a.date));
+    return records.filter(event => (!options.type || options.type === 'all' || (event.event_type || 'performance') === options.type) && (!options.venue || event.venue === options.venue) && (!options.organizer || eventOrganizers(event).includes(options.organizer)) && (!options.member || (event.interactions || []).some(item => participants(item).includes(options.member))) && predicate(event) && search(event, options.query, options.pinyin)).sort((a, b) => b.date.localeCompare(a.date));
   }
   // UTC getters are used solely for calendar arithmetic; input/output never pass
   // through local timezone parsing, so a device timezone cannot shift the day.
@@ -352,6 +543,12 @@
   function mergeStates(current, incoming) {
     const state = validateState(current), imported = validateState(incoming);
     let added = 0, conflicts = 0, skipped = 0;
+    const profiles = new Map(state.members.map(profile => [profile.name, profile]));
+    let memberConflicts = 0, membersAdded = 0;
+    for (const profile of imported.members) {
+      if (!profiles.has(profile.name)) { state.members.push(profile); profiles.set(profile.name, profile); membersAdded++; }
+      else if (canonical(profiles.get(profile.name)) !== canonical(profile)) memberConflicts++;
+    }
     const ids = new Map(state.records.map(event => [event.id, event]));
     for (const event of imported.records) {
       if (ids.has(event.id)) {
@@ -367,7 +564,7 @@
     for (const [key, value] of Object.entries(imported)) if (!own(state, key)) state[key] = value;
     for (const [key, value] of Object.entries(imported.config)) if (!own(state.config, key)) state.config[key] = value;
     for (const [key, value] of Object.entries(imported.assets)) if (!own(state.assets, key)) state.assets[key] = value;
-    return { state: validateState(state), added, conflicts, skipped };
+    return { state: validateState(state), added, conflicts, skipped, membersAdded, memberConflicts };
   }
-  return { FORMAT, SCHEMA_VERSION, APP_VERSION, createEmptyState, cents, amount, money, quantity, validDate, kind, form, count, itemTotal, eventTotal, stats, parseBackup, validateState, mergeStates, search, filterRecords, periodRange, frequent, prices, clone };
+  return { FORMAT, SCHEMA_VERSION, APP_VERSION, createEmptyState, names, participants, itemName, memberCatalog, groupCatalog, memberMetrics, eventOrganizers, identityGroups, preferredIdentity, interactionGroups, interactionRows, cents, amount, money, quantity, validDate, kind, form, count, itemTotal, eventTotal, stats, parseBackup, validateState, mergeStates, search, filterRecords, periodRange, frequent, prices, clone };
 });

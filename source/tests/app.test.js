@@ -20,6 +20,8 @@ class MiniNode {
     for (const [key, value] of Object.entries(attrs)) if (key.startsWith('data-')) this.dataset[key.slice(5).replace(/-([a-z])/g, (_, x) => x.toUpperCase())] = value;
     doc.nodes.push(this);
   }
+  set value(value) { this._value=String(value); }
+  get value() { return this._value||''; }
   contains(node) { for (let n = node; n; n = n.parent) if (n === this) return true; return false; }
   set innerHTML(html) { this.doc.nodes = this.doc.nodes.filter(n => n === this || !this.contains(n)); this._html = String(html); this._text = ''; this.doc.parse(this, this._html); }
   get innerHTML() { return this._html; }
@@ -36,7 +38,7 @@ class MiniNode {
 }
 class MiniDocument {
   constructor() {
-    this.nodes = []; this.body = new MiniNode(this, 'body');
+    this.nodes = []; this.body = new MiniNode(this, 'body');new MiniNode(this,'header',{class:'app-header'},this.body);
     for (const id of ['main', 'modal-title', 'modal-body', 'modal-close', 'add-event', 'toast']) new MiniNode(this, id.includes('close') || id === 'add-event' ? 'button' : 'div', { id }, this.body);
     new MiniNode(this, 'div', { id: 'modal', class: 'hidden' }, this.body);
     new MiniNode(this, 'div', { class: 'sheet' }, this.body);
@@ -90,8 +92,10 @@ function launch(input, options = {}) {
   // public callback the real ranked-name button uses, with core-derived names.
   sandbox.IdolStats = {
     render: () => '<button id="review-ranked-name">查看成员</button>',
-    bind: ctx => document.querySelector('#review-ranked-name').addEventListener('click', () => { const row = ctx.C.stats(ctx.records).ranking[0]; ctx.onMember(row.name, row.kind); })
+    renderFootprints: () => '',
+    bind: ctx => document.querySelector('#review-ranked-name')?.addEventListener('click', () => { const row = ctx.C.stats(ctx.records).ranking[0]; ctx.onMember(row.name, row.kind); })
   };
+  vm.runInContext(fs.readFileSync(path.join(base, 'people.js'), 'utf8'), sandbox);
   vm.runInContext(fs.readFileSync(path.join(base, 'app.js'), 'utf8'), sandbox);
   const get = selector => { const node = document.querySelector(selector); assert.ok(node, 'Missing control: ' + selector); return node; };
   return { document, sandbox, writes, exports, get, click: selector => get(selector).click() };
@@ -112,7 +116,7 @@ test('UI export preserves a valid near-limit state without pretty-print expansio
 
 test('numeric legacy member names open the same totals shown by rankings', () => {
   const app = launch(fixture([event('numeric-member', [{ type: 'individual', member: 42, tickets: 1, total_cost: 10 }])]));
-  app.click('#nav [data-tab=records]'); app.click('[data-period=all]'); app.click('#nav [data-tab=stats]'); app.click('#review-ranked-name');
+  app.click('#nav [data-tab=records]'); app.click('[data-period=all]'); app.click('#nav [data-tab=stats]'); app.click('[data-stats-section=overview]'); app.click('[data-period=all]'); app.click('#review-ranked-name');
   assert.match(app.get('#modal-body').innerHTML, /1 张 \/ 份/);
   assert.match(app.get('#modal-body').innerHTML, /¥10\.00/);
 });
@@ -168,7 +172,7 @@ test('custom activity names survive Chinese composition without native suggestio
   assert.equal(name.attrs.list, undefined);
   assert.equal(name.attrs.autocomplete, 'off');
   assert.doesNotMatch(app.get('#modal-body').innerHTML, /<datalist|\slist=/);
-  assert.ok(!app.get('#event-names-picker').open);
+  assert.equal(app.document.querySelector('#event-names-picker'),null);
   name.focus(); name.dispatch('compositionstart');
   name.value = 'xin huo dong'; name.dispatch('input');
   assert.equal(name.value, 'xin huo dong');
@@ -180,23 +184,11 @@ test('custom activity names survive Chinese composition without native suggestio
   assert.equal(saved.records.find(row => row.id !== 'event-1').event_name, '新活动 自定义名称');
 });
 
-test('history selection is explicit, searchable and still editable without saving or changing other fields', () => {
-  const app = launch(fixture([event()]));
-  app.click('#add-event');
-  const name = app.get('#e-name'), panel = app.get('#event-names-picker'), search = app.get('#event-names-search');
-  name.value = '未保存的名称';
-  panel.open = true; panel.dispatch('toggle');
-  search.dispatch('compositionstart'); search.value = 'ce'; search.dispatch('input');
-  assert.equal(name.value, '未保存的名称');
-  search.value = '测试'; search.dispatch('compositionend');
-  app.click('#event-names [data-history-index]');
-  assert.equal(name.value, '测试演出');
-  assert.equal(panel.open, false);
-  assert.equal(app.document.activeElement, name);
-  assert.equal(app.writes.length, 0);
-  name.value += ' · 追加主题'; name.dispatch('input');
-  app.click('#save-event');
-  assert.equal(app.writes.at(-1).records.find(row => row.id !== 'event-1').event_name, '测试演出 · 追加主题');
+test('activity name is free text without a history picker',()=>{
+ const app=launch(fixture([event()]));app.click('#add-event');
+ assert.equal(app.document.querySelector('#event-names-picker'),null);
+ app.get('#e-name').value='自定义新名称';app.click('#save-event');
+ assert.equal(app.writes.at(-1).records.find(row=>row.id!=='event-1').event_name,'自定义新名称');
 });
 
 test('city history refreshes venue choices and item history still triggers matching price suggestions', () => {
@@ -214,4 +206,200 @@ test('city history refreshes venue choices and item history still triggers match
   app.click('#save-item');
   assert.equal(app.writes.at(-1).records[0].interactions.length, 2);
   assert.equal(app.writes.at(-1).records[0].interactions[1].total_cost, 25);
+});
+
+
+test('member profile editor persists social accounts, multiple groups, color and avatar via normal controls', () => {
+  const app=launch(fixture([event('event-1',[{member:'甲',tickets:1,total_cost:10}])]));
+  app.click('#nav [data-tab=stats]');app.click('[data-stats-section=members]');app.click('[data-period=all]');
+  app.click('[data-member-profile]');app.click('#edit-profile');
+  app.get('#profile-r').value='18';app.get('#profile-g').value='52';app.get('#profile-b').value='86';app.get('#profile-groups').value='团A，团B';
+  app.click('#add-social');app.get('#social-platform-0').value='自选平台';app.get('#social-account-0').value='自选账号';
+  app.sandbox.onNativeAvatar(app.get('#save-profile').dataset.token,'data:image/png;base64,AAAA');
+  app.click('#save-profile');
+  const saved=app.writes.at(-1);
+  assert.equal(saved.members[0].avatar,'data:image/png;base64,AAAA');
+  assert.equal(saved.members[0].groups.join(','),'团A,团B');
+  assert.equal(saved.members[0].social_accounts[0].account,'自选账号');assert.equal(saved.members[0].color,'#123456');
+  app.click('[data-stats-section=groups]');assert.equal(app.document.querySelector('[data-group-profile]'),null);
+  app.click('#nav [data-tab=records]');app.click('[data-period=all]');app.click('[data-event]');app.click('[data-edit-item]');
+  app.get('#item-identities-role-0').value='团A';app.click('#save-item');
+  assert.equal(app.writes.at(-1).records[0].member_roles[0].group,'团A');
+});
+
+test('multi-photo editor and statistics member filter preserve shared identity and money', () => {
+  const app=launch(fixture([event()]));
+  app.click('[data-event]');app.click('#add-item');
+  app.get('#i-kind').value='multi';app.get('#i-kind').dispatch('change');
+  app.get('#i-name').value='甲，乙';app.get('#i-name').dispatch('input');
+  app.get('#i-price').value='10.01';app.get('#i-price').dispatch('input');
+  app.get('#i-shot').value='2026-10-28T19:30';app.click('#save-item');
+  const saved=app.writes.at(-1);
+  assert.equal(saved.records[0].interactions[0].members.join(','),'甲,乙');
+  assert.equal(saved.records[0].interactions[0].total_cost,10.01);
+  app.click('#modal-close');app.click('#nav [data-tab=stats]');app.click('[data-stats-section=photos]');app.click('[data-period=all]');
+  app.get('#photo-member').value='乙';app.get('#photo-member').dispatch('change');
+  assert.match(app.get('#photo-results').innerHTML,/甲 \/ 乙/);
+  assert.match(app.get('#photo-results').innerHTML,/2026-10-28 19:30/);
+  assert.match(app.get('#photo-results').innerHTML,/¥10.01/);
+});
+
+
+test('statistics enters members with tabs and Android back returns home',()=>{
+ const app=launch(fixture([]));app.click('#nav [data-tab=stats]');
+ assert.ok(app.document.querySelector('#member-results'));
+ assert.equal(app.document.querySelectorAll('[data-stats-section]').length,5);
+ assert.equal(app.sandbox.onNativeBack(),true);
+ assert.match(app.get('#main').innerHTML,/本月手账/);
+});
+
+
+test('event organizers and multiple lineups are separate from notes and can be selected across modules',()=>{
+ const initial=fixture([event('old')]);initial.members=[{name:'成员甲',groups:['档案团'],color:'#FFFFFF'}];
+ const app=launch(initial);app.click('#add-event');
+ assert.equal(app.document.querySelector('#event-names-picker'),null);
+ app.get('#e-name').value='新演出';app.get('#e-organizer').value='新事务所';
+ app.click('#performers [data-history-index]');
+ app.get('#e-performing').value+='，新团';app.get('#e-note').value='独立备注';app.click('#save-event');
+ const latest=app.writes.at(-1).records.find(row=>row.id!=='old');
+ assert.equal(latest.organizer,'新事务所');assert.equal(latest.performing_groups.join(','),'档案团,新团');assert.equal(latest.note,'独立备注');
+ app.click('#modal-close');app.click('#nav [data-tab=stats]');app.click('[data-stats-section=members]');app.click('#add-profile');
+ assert.match(app.get('#profile-group-history').innerHTML,/新团/);
+ assert.equal(app.document.querySelectorAll('[data-cheer-color]').length,11);
+ assert.equal(app.get('#profile-color').value,'#FFFFFF');
+ assert.equal(app.document.querySelector('#social-platform-0'),null);
+ app.click('[data-cheer-color="#7EDFFF"]');assert.equal(app.get('#profile-color').value,'#7EDFFF');
+ app.get('#profile-name').value='新成员';app.click('#profile-group-history [data-history-index]');app.click('#save-profile');
+ assert.equal(app.writes.at(-1).members.find(row=>row.name==='新成员').groups.length,1);
+ app.click('[data-stats-section=photos]');assert.equal(app.get('#photo-member').value,'');
+});
+
+test('records and statistics hide shared header while record filters preserve their intersection',()=>{
+ const input=fixture([event('one',[{member:'甲',total_cost:1}]),{...event('two',[{member:'乙',total_cost:2}]),organizer:'主办乙'}]);
+ const app=launch(input);app.click('#nav [data-tab=records]');app.click('[data-period=all]');
+ assert.equal(app.document.querySelector('.app-header').classList.contains('hidden'),true);
+ app.get('#record-organizer').value='主办乙';app.get('#record-organizer').dispatch('change');
+ app.get('#record-member').value='甲';app.get('#record-member').dispatch('change');
+ assert.match(app.get('#records-results').innerHTML,/共 0 条/);
+ app.get('#record-member').value='乙';app.get('#record-member').dispatch('change');assert.match(app.get('#records-results').innerHTML,/共 1 条/);
+ app.click('#nav [data-tab=stats]');assert.ok(app.document.querySelector('#member-results'));
+ assert.doesNotMatch(app.get('#main').innerHTML,/统计与回顾/);
+ app.click('#nav [data-tab=home]');assert.equal(app.document.querySelector('.app-header').classList.contains('hidden'),false);
+ assert.doesNotMatch(app.get('#main').innerHTML,/MY IDOL JOURNAL|每次相见，都值得记下/);
+});
+
+test('member ranking defaults to full-history photo counts and profile social rows are removable',()=>{
+ const input=fixture([{...event('old',[{member:'甲',tickets:3,total_cost:100}]),date:'2026-01-01'},{...event('new',[{member:'乙',tickets:3,total_cost:30}]),date:'2026-11-10'}]);
+ const app=launch(input);app.click('#nav [data-tab=stats]');app.click('[data-stats-section=members]');
+ assert.ok(app.get('#member-results').innerHTML.indexOf('data-member-profile="乙"')<app.get('#member-results').innerHTML.indexOf('data-member-profile="甲"'));
+ app.get('#member-order').value='cost';app.get('#member-order').dispatch('change');
+ assert.ok(app.get('#member-results').innerHTML.indexOf('data-member-profile="甲"')<app.get('#member-results').innerHTML.indexOf('data-member-profile="乙"'));
+ app.click('[data-member-profile]');app.click('#edit-profile');app.click('#add-social');
+ app.get('#social-platform-0').value='自选平台';app.get('#social-account-0').value='账号';app.click('[data-remove-social]');
+ app.click('#save-profile');assert.equal(app.writes.at(-1).members[0].social_accounts.length,0);
+});
+
+test('statistics tab order and default periods follow the selected section',()=>{
+ const app=launch(fixture([]));app.click('#nav [data-tab=stats]');
+ assert.ok(app.document.querySelector('#member-results'));
+ assert.equal(app.get('[data-period=all]').classList.contains('active'),true);
+ assert.deepEqual(app.document.querySelectorAll('[data-stats-section]').map(node=>node.dataset.statsSection),['overview','members','photos','groups','footprints']);
+ for(const section of ['overview','photos','groups','footprints','members']){
+  app.click('[data-stats-section='+section+']');
+  assert.equal(app.get('[data-period='+(section==='overview'?'month':'all')+']').classList.contains('active'),true);
+  app.click('[data-period=year]');
+ }
+ assert.equal(app.document.querySelector('#member-content'),null);
+ assert.equal(app.document.querySelector('#member-scope'),null);
+});
+
+test('member metrics include all benefits and follow the top date controls',()=>{
+ const input=fixture([{...event('old',[{member:'甲',benefit_format:'homework',tickets:3,total_cost:120}]),date:'2026-01-01'},event('theme',[{member:'乙',benefit_format:'theme',tickets:1,total_cost:60}])]);
+ const app=launch(input);app.click('#nav [data-tab=stats]');
+ assert.equal(app.get('[data-member-profile]').dataset.memberProfile,'甲');
+ app.click('[data-member-profile]');assert.match(app.get('#modal-body').innerHTML,/宿题\/主题/);assert.match(app.get('#modal-body').innerHTML,/¥120.00/);app.click('#modal-close');
+ app.click('[data-period=custom]');app.get('#range-start').value='2026-10-01';app.get('#range-start').dispatch('change');app.get('#range-end').value='2026-10-31';app.get('#range-end').dispatch('change');
+ assert.equal(app.get('[data-member-profile]').dataset.memberProfile,'乙');
+ assert.equal(app.document.querySelector('[data-member-profile=甲]'),null);
+});
+
+test('joint organizer editing appends history choices and places venue fees before organizers',()=>{
+ const input=fixture([{...event(),organizer:'主办乙'}]);const app=launch(input);app.click('#add-event');
+ const html=app.get('#modal-body').innerHTML;
+ for(const id of ['e-city','e-venue','e-ticket','e-drink'])assert.ok(html.indexOf('id="'+id+'"')<html.indexOf('id="e-organizer"'));
+ app.get('#e-name').value='联合公演';app.get('#e-organizer').value='主办甲';app.click('#organizers [data-history-index]');app.click('#save-event');
+ const saved=app.writes.at(-1).records.find(e=>e.id!=='event-1');
+ assert.equal(saved.organizers.join(','),'主办甲,主办乙');
+ app.click('#modal-close');app.click('#nav [data-tab=records]');app.click('[data-period=all]');
+ for(const name of saved.organizers){app.get('#record-organizer').value=name;app.get('#record-organizer').dispatch('change');assert.match(app.get('#records-results').innerHTML,/联合公演/);}
+});
+
+test('multi-photo identities save individually and activity changes synchronize every interaction',()=>{
+ const input=fixture([event('identity',[{id:'old',member:'甲',tickets:1,total_cost:20}])]);input.members=[{name:'甲',groups:['团A','团B']},{name:'乙',groups:['团A']}];
+ const app=launch(input);app.click('[data-event]');app.click('#add-item');app.get('#i-kind').value='multi';app.get('#i-kind').dispatch('change');app.get('#i-name').value='甲，乙';app.get('#i-name').dispatch('input');
+ assert.equal(app.get('#item-identities-role-0').value,'');assert.equal(app.get('#item-identities-role-1').value,'团A');
+ app.get('#item-identities-role-0').value='团B';app.get('#i-price').value='60';app.get('#i-price').dispatch('input');app.click('#save-item');
+ let saved=app.writes.at(-1);assert.equal(saved.records[0].interactions[0].participant_groups[0].group,'团B');
+ assert.equal(saved.records[0].interactions[1].participant_groups[1].group,'团A');
+ app.click('#edit-basics');app.get('#event-identities-role-0').value='团A';app.click('#save-event');
+ saved=app.writes.at(-1);for(const item of saved.records[0].interactions)assert.equal(item.participant_groups.find(role=>role.member==='甲').group,'团A');
+ assert.match(app.get('#modal-body').innerHTML,/甲（团A）/);
+ app.click('#modal-close');app.click('#nav [data-tab=stats]');app.click('[data-member-profile="甲"]');app.click('#edit-profile');app.get('#profile-name').value='新甲';app.click('#save-profile');
+ saved=app.writes.at(-1);assert.equal(saved.records[0].member_roles[0].member,'新甲');for(const item of saved.records[0].interactions)assert.ok(item.participant_groups.some(role=>role.member==='新甲'));
+ app.click('#nav [data-tab=backup]');app.click('#export-full');assert.equal(JSON.parse(app.exports.at(-1)).records[0].member_roles[0].member,'新甲');
+});
+
+test('group list sorts by interaction row count independently of amount or ticket quantity',()=>{
+ const input=fixture([event('groups',[
+  {type:'group',group_name:'金额高',tickets:100,total_cost:1000},
+  {type:'group',group_name:'互动多',tickets:1,total_cost:1},
+  {type:'group',group_name:'互动多',tickets:1,total_cost:1}
+ ])]);const app=launch(input);app.click('#nav [data-tab=stats]');app.click('[data-stats-section=groups]');
+ assert.equal(app.get('[data-group-profile]').dataset.groupProfile,'互动多');
+});
+
+test('home overview detail amounts counts and pagination agree with summary metrics',()=>{
+ const date=new Date(),month=date.getFullYear()+'-'+String(date.getMonth()+1).padStart(2,'0');
+ const input=fixture([{...event('overview',[{member:'甲',tickets:2,total_cost:80},{type:'merch',item_name:'周边',quantity:3,total_cost:20}]),date:month+'-01',ticket_fee:30,drink_fee:10}]);
+ const app=launch(input);
+ for(const [kind,amount,count] of [['total','140.00','1 条'],['performances','140.00','1 条'],['benefits','80.00','2 张 / 份'],['merch','20.00','3 件'],['ticket','30.00','1 条'],['drink','10.00','1 条']]){
+  app.click('[data-overview-detail='+kind+']');assert.ok(app.get('#modal-body').innerHTML.includes(amount));assert.ok(app.get('#modal-body').innerHTML.includes(count));app.click('#modal-close');
+ }
+ app.click('[data-overview-detail=benefits]');app.click('[data-detail-event]');assert.ok(app.document.querySelector('#add-item'));
+});
+
+test('one profile save renames every benefit format and participant across all historical activities',()=>{
+ const formats=['cheki','signed','unsigned','online','homework','theme','other'];
+ const records=formats.map((format,index)=>({...event('rename-'+index,[{id:'item-'+index,member:'旧名',benefit_format:format,tickets:index+1,total_cost:index+10}]),date:'2025-01-'+String(index+1).padStart(2,'0')}));
+ records.push({...event('shared',[{cheki_type:'multi',members:['旧名','另一成员'],participant_groups:[{member:'旧名',group:'团A'}],tickets:1,total_cost:99}]),member_roles:[{member:'旧名',group:'团A'}]});
+ const input=fixture(records);input.members=[{name:'旧名',groups:['团A']}];
+ const baseline=C.stats(records);const app=launch(input);app.click('#nav [data-tab=stats]');app.click('[data-member-profile="旧名"]');app.click('#edit-profile');app.get('#profile-name').value='新名';app.click('#save-profile');
+ const saved=app.writes.at(-1);assert.ok(saved);assert.equal(saved.records.flatMap(e=>e.interactions).filter(i=>C.participants(i).includes('新名')).length,8);
+ assert.ok(saved.records.every(e=>e.interactions.every(i=>!C.participants(i).includes('旧名'))));
+ assert.equal(C.stats(saved.records).total,baseline.total);assert.equal(C.stats(saved.records).ticketCount,baseline.ticketCount);
+ assert.equal(saved.members[0].name,'新名');
+ app.click('[data-member-profile="新名"]');assert.match(app.get('#modal-body').innerHTML,/8 条互动/);
+});
+
+test('statistics hides members and groups without interactions while zero-cost interactions remain visible',()=>{
+ const input=fixture([event('free',[{member:'有记录',tickets:1,total_cost:0,affiliated_group:'有互动团'}])]);
+ input.members=[{name:'有记录',groups:['有互动团']},{name:'无记录',groups:['空团']}];
+ const app=launch(input);app.click('#nav [data-tab=stats]');
+ assert.ok(app.document.querySelector('[data-member-profile=有记录]'));assert.equal(app.document.querySelector('[data-member-profile=无记录]'),null);
+ app.click('[data-stats-section=groups]');assert.ok(app.document.querySelector('[data-group-profile=有互动团]'));assert.equal(app.document.querySelector('[data-group-profile=空团]'),null);
+ app.click('[data-period=custom]');app.get('#range-start').value='2020-01-01';app.get('#range-start').dispatch('change');app.get('#range-end').value='2020-12-31';app.get('#range-end').dispatch('change');
+ assert.equal(app.document.querySelector('[data-group-profile]'),null);
+ app.click('[data-stats-section=members]');app.click('[data-period=custom]');assert.equal(app.document.querySelector('[data-member-profile]'),null);
+});
+
+test('editing an ambiguous legacy affiliation retains its data until an identity is selected',()=>{
+ const input=fixture([event('legacy-identity',[{member:'甲',affiliated_groups:['团A','团B'],tickets:1,total_cost:50}])]);
+ input.members=[{name:'甲',groups:['团A','团B']}];const app=launch(input);app.click('[data-event]');app.click('[data-edit-item]');app.get('#i-note').value='仅修改备注';app.click('#save-item');
+ const saved=app.writes.at(-1);assert.equal(saved.records[0].interactions[0].affiliated_groups.join(','),'团A,团B');assert.equal(saved.records[0].member_roles.length,0);
+});
+
+test('homework activity type remains selectable and new theme cheki is an independent benefit format',()=>{
+ const app=launch(fixture([]));app.click('#add-event');app.get('#e-type').value='theme_homework';app.get('#e-type').dispatch('change');app.get('#e-name').value='主题切订单';app.click('#save-event');
+ assert.match(app.get('#modal-body').innerHTML,/宿题\/主题/);app.click('#add-item');assert.equal(app.get('#i-form').value,'theme');app.get('#i-name').value='甲';app.get('#i-name').dispatch('input');app.get('#i-price').value='60';app.get('#i-price').dispatch('input');app.click('#save-item');
+ assert.equal(app.writes.at(-1).records[0].event_type,'theme_homework');assert.equal(app.writes.at(-1).records[0].interactions[0].benefit_format,'theme');
 });

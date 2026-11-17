@@ -40,7 +40,7 @@ test('missing event IDs are stable, duplicate known IDs and malformed input are 
   assert.throws(() => state([event(), event()]));
   for (const date of ['2026-02-29', '0000-01-01', '2026-13-01', '2026-04-31', '2026-1-01']) assert.throws(() => state([event({ date })]));
   assert.doesNotThrow(() => state([event({ date: '2024-02-29' })]));
-  for (const input of ['{}', '{', '{"records":null}', '{"records":[],"version":3}', '{"records":[],"config":{"__proto__":{"polluted":1}}}']) assert.throws(() => Core.parseBackup(input));
+  for (const input of ['{}', '{', '{"records":null}', '{"records":[],"version":6}', '{"records":[],"config":{"__proto__":{"polluted":1}}}']) assert.throws(() => Core.parseBackup(input));
   for (const n of [0, -1, 1.5, 'two']) assert.throws(() => state([event({ interactions: [{ type: 'merch', quantity: n, price: 1 }] })]));
   assert.equal({}.polluted, undefined);
 });
@@ -223,15 +223,15 @@ test('statistics render monthly zero rows, merchandise, empty ranges and all des
   assert.ok(quarter.includes('周边商品'));
   assert.ok(quarter.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
   assert.ok(!quarter.includes('<script>alert(1)</script>'));
-  assert.match(quarter, /2024-02<\/button><\/th><td>0<\/td><td>0<\/td><td>0<\/td><td>¥0\.00<\/td>/);
+  assert.ok(!quarter.includes('id="stats-monthly"'));
+  assert.ok(quarter.includes('data-stats-action="monthly-detail"'));
   assert.ok(quarter.includes('¥20.00'));
   const emptyYear = render(state([]), 'year');
-  assert.equal((emptyYear.match(/data-stats-action="month-period"/g) || []).length, 12);
+  assert.equal((emptyYear.match(/data-stats-action="month-period"/g) || []).length, 0);
   assert.ok(emptyYear.includes('本时段没有周边购买记录'));
   const long = render(state([]), 'custom', '2026-10-28', { start: '2000-01-01', end: '2026-12-31' });
-  assert.ok(long.includes('表格仅显示最近 120 个月'));
-  assert.ok(long.includes('展开 120 个月'));
-  assert.equal((long.match(/data-stats-action="month-period"/g) || []).length, 12);
+  assert.ok(long.includes('data-stats-action="monthly-detail"'));
+  assert.equal((long.match(/data-stats-action="month-period"/g) || []).length, 0);
   for (const kind of ['week', 'month', 'quarter', 'year', 'all']) assert.ok(render(fixture, kind).includes('id="idol-stats"'));
 });
 
@@ -246,8 +246,8 @@ test('schema 1 migration drops images and preserves all non-image records, money
   };
   const before = JSON.stringify(source);
   const migrated = Core.parseBackup(before);
-  assert.equal(migrated.version, 2);
-  assert.equal(migrated.app_version, '1.1.2');
+  assert.equal(migrated.version, 5);
+  assert.equal(migrated.app_version, '1.1.5');
   const expectedRecords = JSON.parse(JSON.stringify(source.records));
   delete expectedRecords[0].interactions[0].image;
   assert.deepEqual(migrated.records, expectedRecords);
@@ -263,7 +263,7 @@ test('schema 1 migration drops images and preserves all non-image records, money
 
 test('new install state is blank, contains no private seed, and returns independent objects', () => {
   const empty = Core.createEmptyState();
-  assert.deepEqual(empty, { format: 'idol-tracker-backup', version: 2, app_version: '1.1.2', records: [], config: { monthly_budget: 0 }, assets: { images: {} } });
+  assert.deepEqual(empty, { format: 'idol-tracker-backup', version: 5, app_version: '1.1.5', records: [], members: [], config: { monthly_budget: 0 }, assets: { images: {} } });
   assert.deepEqual(Core.validateState(empty), empty);
   empty.records.push(event()); empty.config.monthly_budget = 50; empty.assets.images['private.jpg'] = 'data:image/jpeg;base64,AAAA';
   assert.deepEqual(Core.createEmptyState().records, []);
@@ -280,13 +280,15 @@ test('location sorting is deterministic, independent and nonmutating; product so
   assert.deepEqual(globalThis.IdolStats.sortLocations([{ name: '同名', city: 'B', cost: 1, count: 1 }, { name: '同名', city: 'A', cost: 1, count: 1 }], 'count').map(row => row.city), ['A', 'B']);
   const s = state([event({ event_type: 'theme_homework', ticket_fee: 5, interactions: [{ type: 'merch', item_name: 'cheap-many', price: 1, quantity: 5 }, { type: 'merch', item_name: 'expensive-one', price: 50, quantity: 1 }] })]);
   const html = globalThis.IdolStats.render({ C: Core, state: s, records: s.records, range: null, periodKind: 'all' });
-  assert.ok(html.includes('拍切统计'));
+  assert.ok(!html.includes('id="stats-ranking"'));
   assert.ok(html.includes('宿题/主题'));
   assert.ok(html.includes('门票'));
   assert.ok(!html.includes('相见排行') && !html.includes('入场 / 参加费'));
   assert.ok(!html.includes('merch-sort') && !html.includes('按商品名'));
   assert.ok(html.indexOf('expensive-one') < html.indexOf('cheap-many'));
-  assert.equal((html.match(/data-stats-action="location-sort"/g) || []).length, 4);
+  assert.equal((html.match(/data-stats-action="location-sort"/g) || []).length, 0);
+  const footprints=globalThis.IdolStats.renderFootprints({C:Core,state:s,records:s.records,range:null});
+  assert.equal((footprints.match(/data-stats-action="location-sort"/g)||[]).length,6);
 });
 
 test('location sort handlers preserve expanded rows and independent choices across periods', () => {
@@ -299,19 +301,19 @@ test('location sort handlers preserve expanded rows and independent choices acro
   globalThis.document = { querySelector: () => host };
   const click = dataset => { const button = { dataset }; host.onclick({ target: { closest: () => button } }); };
   try {
-    globalThis.IdolStats.render(ctx); globalThis.IdolStats.bind(ctx);
+    globalThis.IdolStats.renderFootprints(ctx); globalThis.IdolStats.bind(ctx);
     click({ statsAction: 'cities-expanded' });
     click({ statsAction: 'location-sort', location: 'cities', sort: 'count' });
     assert.equal((fragments['#stats-cities'].innerHTML.match(/class="stats-location"/g) || []).length, 9);
     assert.ok(fragments['#stats-cities'].innerHTML.indexOf('<strong>A</strong>') < fragments['#stats-cities'].innerHTML.indexOf('<strong>I</strong>'));
     const next = { ...ctx, range: Core.periodRange('year', '2026-10-28'), periodKind: 'year' };
-    const html = globalThis.IdolStats.render(next);
+    const html = globalThis.IdolStats.renderFootprints(next);
     assert.match(html, /data-location="cities" data-sort="count" class="active"/);
     assert.match(html, /data-location="venues" data-sort="cost" class="active"/);
     assert.ok(html.includes('2026-01-01 至 2026-12-31'));
     globalThis.IdolStats.bind(next);
     click({ statsAction: 'location-sort', location: 'venues', sort: 'count' });
-    const after = globalThis.IdolStats.render(next);
+    const after = globalThis.IdolStats.renderFootprints(next);
     assert.match(after, /data-location="cities" data-sort="count" class="active"/);
     assert.match(after, /data-location="venues" data-sort="count" class="active"/);
   } finally { if (originalDocument === undefined) delete globalThis.document; else globalThis.document = originalDocument; }
@@ -333,14 +335,16 @@ test('equal-cost merchandise uses only product name as tie-breaker, never quanti
 test('1.1.0 schema 2 data drops images without changing other fields and remains idempotent', () => {
   const previous = state([event({ ticket_fee: 12.34, custom: { retained: true }, interactions: [{ id: 'item-110', type: 'merch', item_name: '商品', price: 7.25, quantity: 2, total_cost: 14.5, image: 'photo.jpg', delivery_status: 'legacy' }] })], { config: { monthly_budget: 987.65, extra: 'kept' }, assets: { images: { 'photo.jpg': 'data:image/jpeg;base64,AAAA' } }, extension: [1, 2, 3] });
   previous.app_version = '1.1.0';
+  previous.version = 2;
   previous.records[0].interactions[0].image = 'photo.jpg';
   previous.assets.images['photo.jpg'] = 'data:image/jpeg;base64,AAAA';
   const source = JSON.stringify(previous), expected = JSON.parse(JSON.stringify(previous));
-  expected.app_version = '1.1.2';
+  expected.app_version = '1.1.5';
+  expected.version = 5;
   delete expected.records[0].interactions[0].image;
   expected.assets.images = {};
   const migrated = Core.parseBackup(source);
-  assert.equal(migrated.version, 2);
+  assert.equal(migrated.version, 5);
   assert.deepEqual(migrated, expected);
   assert.deepEqual(Core.validateState(migrated), migrated);
   assert.deepEqual(Core.parseBackup(JSON.stringify(migrated)), migrated);
@@ -480,4 +484,176 @@ test('day, week and year trend buckets update the same header through actual bin
       assert.deepEqual(harness.selected, [0]);
     });
   }
+});
+
+
+test('member avatars and multi-group profiles survive schema-4 backup and migration remains idempotent', () => {
+  const input = { version: 2, app_version: '1.1.2', records: [event()], config: { monthly_budget: 99 } };
+  const migrated = Core.validateState(input);
+  assert.equal(migrated.version, 5);
+  assert.deepEqual(migrated.members, []);
+  const avatar = 'data:image/png;base64,AAAA';
+  migrated.members = [{name:'甲',avatar,color:'#123456',groups:['团A','团B','团A'],weibo:'@甲',douyin:'dy-id',xiaohongshu:'xhs-id'}];
+  const result = Core.validateState(migrated);
+  assert.equal(result.members[0].avatar, avatar);
+  assert.deepEqual(result.members[0].groups, ['团A','团B']);
+  assert.deepEqual(Core.parseBackup(JSON.stringify(result)), result);
+  assert.deepEqual(Core.validateState(result), result);
+  for (const profile of [{name:'甲',avatar:'javascript:alert(1)'},{name:'甲',color:'red'},{name:''}]) assert.throws(()=>Core.validateState({...result,members:[profile]}));
+});
+
+test('multi-member photos count once globally and split cents exactly across participating members', () => {
+  const data = state([event({interactions:[{type:'cheki',cheki_type:'multi',members:['甲','乙','甲'],tickets:2,total_cost:10.01,benefit_format:'signed'},{type:'group',group_name:'团A',tickets:1,total_cost:5}]})]);
+  const s=Core.stats(data.records);
+  assert.equal(s.total,1501);assert.equal(s.ticketCount,3);assert.equal(s.interactionCount,2);
+  assert.equal(s.ranking.find(row=>row.name==='甲').cost,501);
+  assert.equal(s.ranking.find(row=>row.name==='乙').cost,500);
+  assert.equal(s.ranking.find(row=>row.name==='甲').count,2);
+  assert.equal(s.ranking.reduce((sum,row)=>sum+row.cost,0),1501);
+  assert.equal(Core.kind(data.records[0].interactions[0]),'multi');
+  assert.equal(Core.interactionRows(data,{member:'乙'}).length,1);
+  assert.equal(Core.interactionRows(data,{member:'团A'}).length,0);
+  assert.throws(()=>state([event({interactions:[{cheki_type:'multi',members:['甲','甲'],tickets:1,total_cost:1}]})]));
+});
+
+test('photo time ordering, member queries and explicit-versus-profile group attribution are consistent', () => {
+  const data=state([event({id:'first',date:'2026-10-02',interactions:[
+    {type:'cheki',member:'甲',tickets:1,total_cost:1,shot_at:'2026-10-01T20:00'},
+    {type:'cheki',cheki_type:'multi',members:['甲','乙'],tickets:1,total_cost:3,shot_at:'2026-10-03T10:30',affiliated_groups:['限定团']},
+    {type:'group',group_name:'团A',tickets:1,total_cost:2},
+    {type:'cheki',member:'甲',tickets:1,total_cost:4,benefit_format:'homework'}
+  ]})],{members:[{name:'甲',groups:['团A','团B']},{name:'乙',groups:['团A']}]});
+  const rows=Core.interactionRows(data,{photosOnly:true});
+  assert.equal(rows.length,3);assert.equal(Core.kind(rows[0].item),'multi');
+  assert.equal(Core.interactionRows(data,{photosOnly:true,order:'oldest'})[0].item.total_cost,1);
+  assert.equal(Core.interactionRows(data,{photosOnly:true,member:'乙'})[0].item.total_cost,3);
+  assert.equal(Core.interactionRows(data,{group:'团A'}).length,1);
+  assert.equal(Core.interactionRows(data,{group:'团B'}).length,0);
+  assert.equal(Core.interactionRows(data,{group:'限定团'}).length,1);
+  assert.equal(Core.interactionRows(data,{photosOnly:true,start:'2026-10-03',end:'2026-10-03'}).length,1);
+  assert.equal(Core.interactionRows(data,{dateBasis:'activity',start:'2026-10-02',end:'2026-10-02'}).length,4);
+  assert.equal(Core.interactionRows(data,{dateBasis:'activity',start:'2026-10-03',end:'2026-10-03'}).length,0);
+  assert.throws(()=>state([event({interactions:[{member:'甲',shot_at:'2026-02-30T18:00'}]})]));
+});
+
+test('profile merge retains local conflicts and adds incoming profiles including avatars', () => {
+  const local=state([],{members:[{name:'甲',groups:['旧团']}]});
+  const incoming=state([],{members:[{name:'甲',groups:['新团']},{name:'乙',avatar:'data:image/png;base64,AAAA',groups:['新团']}]});
+  const result=Core.mergeStates(local,incoming);
+  assert.equal(result.membersAdded,1);assert.equal(result.memberConflicts,1);
+  assert.deepEqual(result.state.members.find(member=>member.name==='甲').groups,['旧团']);
+  assert.equal(result.state.members.find(member=>member.name==='乙').avatar,'data:image/png;base64,AAAA');
+  assert.equal(Core.mergeStates(result.state,incoming).membersAdded,0);
+});
+
+
+test('schema 3 social accounts migrate to editable entries and empty accounts remain empty after reload',()=>{
+ const old={version:3,app_version:'1.1.3',records:[],members:[{name:'甲',groups:['团A'],weibo:'@旧微博',douyin:'旧抖音',xiaohongshu:'',avatar:''}]};
+ const migrated=Core.validateState(old);
+ assert.equal(migrated.version,5);assert.equal(migrated.members[0].color,'#FFFFFF');
+ assert.deepEqual(migrated.members[0].social_accounts,[{platform:'微博',account:'@旧微博'},{platform:'抖音',account:'旧抖音'}]);
+ assert.equal(migrated.members[0].weibo,undefined);
+ migrated.members[0].social_accounts=[];
+ assert.deepEqual(Core.parseBackup(JSON.stringify(migrated)).members[0].social_accounts,[]);
+ assert.throws(()=>state([],{members:[{name:'甲',social_accounts:[{platform:'',account:'1'}]}]}));
+});
+
+test('group catalog unifies performance lineups member profiles and individual or group interactions',()=>{
+ const data=state([event({performing_groups:['参演团','共用团'],organizer:'主办A',interactions:[{type:'group',group_name:'团切团',total_cost:0},{member:'甲',total_cost:0,affiliated_group:'消费团'}]})],{members:[{name:'甲',groups:['共用团','档案团']}]});
+ assert.deepEqual(new Set(Core.groupCatalog(data)),new Set(['参演团','共用团','团切团','消费团','档案团']));
+ assert.deepEqual(Core.validateState(data),data);
+});
+
+test('record secondary filters compose with activity type dates venue member and organizer',()=>{
+ const data=state([
+  event({id:'a',venue:'场地A',organizer:'事务所A',interactions:[{cheki_type:'multi',members:['甲','乙'],total_cost:30}]}),
+  event({id:'b',venue:'场地A',organizer:'事务所B',interactions:[{member:'甲',total_cost:10}]}),
+  event({id:'c',event_type:'bonus_only',venue:'场地B',interactions:[{member:'乙',total_cost:20}]})
+ ]);
+ assert.deepEqual(Core.filterRecords(data.records,{type:'performance',venue:'场地A',member:'乙',organizer:'事务所A'}).map(row=>row.id),['a']);
+ assert.equal(Core.filterRecords(data.records,{venue:'场地B',member:'甲'}).length,0);
+});
+
+test('member quantity ties use latest photo before amount and scope or sorting can be changed independently',()=>{
+ const data=state([
+  event({id:'old',date:'2026-10-01',interactions:[{member:'甲',tickets:3,total_cost:300},{member:'甲',benefit_format:'homework',tickets:99,total_cost:99}]}),
+  event({id:'new',date:'2026-11-10',interactions:[{member:'乙',tickets:3,total_cost:30}]}),
+ ],{members:[{name:'无记录'}]});
+ assert.deepEqual(Core.memberMetrics(data,{photosOnly:true}).map(row=>row.name),['乙','甲','无记录']);
+ assert.equal(Core.memberMetrics(data,{photosOnly:true,sort:'cost'})[0].name,'甲');
+ assert.equal(Core.memberMetrics(data,{photosOnly:true,sort:'latest'})[0].name,'乙');
+ assert.equal(Core.memberMetrics(data,{photosOnly:true,start:'2026-11-01',end:'2026-11-30'}).find(row=>row.name==='甲').count,0);
+ assert.equal(Core.memberMetrics(data,{photosOnly:false}).find(row=>row.name==='甲').count,102);
+});
+
+test('footprints track latest activity and monthly summary is reached by the trend detail control',()=>{
+ require('../app/src/main/assets/www/stats-ui.js');
+ const data=state([event({id:'a',date:'2026-10-01',venue:'旧场地',city:'旧城',ticket_fee:100}),event({id:'b',date:'2026-11-01',venue:'新场地',city:'新城',ticket_fee:1})]);
+ assert.equal(globalThis.IdolStats.sortLocations(Core.stats(data.records).venues,'latest')[0].name,'新场地');
+ const ctx={C:Core,state:data,records:data.records,range:Core.periodRange('year','2026-11-17'),periodKind:'year'};
+ const overview=globalThis.IdolStats.render(ctx);
+ assert.ok(overview.includes('monthly-detail'));assert.ok(!overview.includes('id="stats-monthly"'));assert.ok(!overview.includes('stats-cities'));assert.ok(!overview.includes('stats-ranking'));
+ let opened='';const original=globalThis.document;
+ globalThis.document={querySelector:()=>({})};
+ try{globalThis.IdolStats.showMonthly({...ctx,modal:(title,html)=>{opened=html;}});assert.equal((opened.match(/data-stats-action="month-period"/g)||[]).length,2);assert.ok(opened.includes('2026-10'));}
+ finally{if(original===undefined)delete globalThis.document;else globalThis.document=original;}
+});
+test('theme cheki legacy detection preserves raw money and includes explicit themes in photo records',()=>{
+ const input=state([event({event_type:'theme_homework',event_name:'万圣节主题切',interactions:[{id:'theme',member:'甲',benefit_format:'homework',tickets:1,total_cost:60}]})]);
+ const item=input.records[0].interactions[0];
+ assert.equal(Core.form(item,'theme_homework',input.records[0]),'theme');
+ assert.equal(Core.interactionRows(input,{photosOnly:true}).length,1);
+ assert.equal(Core.memberMetrics(input,{photosOnly:false})[0].count,1);
+ assert.equal(Core.stats(input.records).forms.theme.cost,6000);
+ assert.equal(item.benefit_format,'homework');assert.equal(item.total_cost,60);
+ assert.equal(Core.form({benefit_format:'homework',note:'宿题的主题内容'},'performance'),'homework');
+ const ordinary=state([event({interactions:[{member:'乙',benefit_format:'homework',tickets:2,total_cost:80}]})]);
+ assert.equal(Core.interactionRows(ordinary).length,1);assert.equal(Core.interactionRows(ordinary,{photosOnly:true}).length,0);
+});
+
+test('joint organizers each match secondary filters and old single organizer remains compatible',()=>{
+ const data=state([event({organizers:['主办甲','主办乙','主办甲'],organizer:'旧显示值'}),event({id:'old',organizer:'旧主办'})]);
+ assert.deepEqual(Core.eventOrganizers(data.records[0]),['主办甲','主办乙']);
+ for(const organizer of ['主办甲','主办乙'])assert.equal(Core.filterRecords(data.records,{organizer}).length,1);
+ assert.equal(Core.filterRecords(data.records,{organizer:'旧主办'}).length,1);
+ assert.deepEqual(Core.parseBackup(JSON.stringify(data)),data);
+});
+
+test('event identities override legacy affiliations and cross-group photos filter each participant separately',()=>{
+ const input=state([event({member_roles:[{member:'甲',group:'团B'},{member:'乙',group:'团A'}],interactions:[
+  {id:'multi',cheki_type:'multi',members:['甲','乙'],affiliated_groups:['旧团'],participant_groups:[{member:'甲',group:'旧团'}],tickets:2,total_cost:100},
+  {id:'single',member:'甲',tickets:1,total_cost:30}
+ ]})],{members:[{name:'甲',groups:['团A','团B']},{name:'乙',groups:['团A']}]});
+ assert.equal(Core.interactionRows(input,{group:'团B'}).length,2);
+ assert.equal(Core.interactionRows(input,{group:'团A'}).length,1);
+ assert.equal(Core.interactionRows(input,{member:'甲',group:'团A'}).length,0);
+ assert.equal(Core.interactionRows(input,{member:'乙',group:'团B'}).length,0);
+ assert.equal(Core.interactionRows(input,{member:'甲',group:'团B'}).length,2);
+ assert.equal(Core.stats(input.records).ticketCount,3);
+ assert.equal(Core.stats(input.records).total,13000);
+ assert.deepEqual(Core.parseBackup(JSON.stringify(input)),input);
+ assert.equal(input.records[0].interactions[0].participant_groups[0].group,'团B');
+ input.records[0].member_roles[0].group='';
+ const unspecified=Core.validateState(input);
+ assert.equal(Core.interactionRows(unspecified,{member:'甲',group:'团B'}).length,0);
+ assert.equal(Core.interactionRows(unspecified,{member:'甲'}).length,2);
+});
+
+test('ambiguous multi-group profiles remain unspecified and identity suggestions use unique lineup intersections',()=>{
+ const data=state([event({performing_groups:['团B'],interactions:[{member:'甲',tickets:1,total_cost:30}]})],{members:[{name:'甲',groups:['团A','团B']}]});
+ const e=data.records[0],item=e.interactions[0];
+ assert.deepEqual(Core.identityGroups(item,data,e,'甲'),[]);
+ assert.equal(Core.preferredIdentity(item,data,e,'甲'),'团B');
+ assert.throws(()=>state([event({member_roles:[{member:'甲',group:'团A'},{member:'甲',group:'团B'}]})]));
+ assert.throws(()=>state([event({interactions:[{member:'甲',participant_groups:[{member:'乙',group:'团A'}]}]})]));
+});
+
+test('statistics omits empty activity types and months but includes free recorded benefits',()=>{
+ require('../app/src/main/assets/www/stats-ui.js');
+ const data=state([event({event_type:'bonus_only',interactions:[{member:'甲',tickets:1,total_cost:0}]})]);
+ const html=globalThis.IdolStats.render({C:Core,state:data,records:data.records,range:Core.periodRange('year','2026-01-01'),periodKind:'year'});
+ assert.ok(html.includes('data-type="bonus_only"'));assert.ok(!html.includes('data-type="performance"'));assert.ok(html.includes('data-detail="benefits"'));assert.ok(!html.includes('data-detail="merch"'));
+ const original=globalThis.document;let body='';globalThis.document={querySelector:()=>({})};
+ try{globalThis.IdolStats.showMonthly({C:Core,state:data,records:data.records,range:Core.periodRange('year','2026-01-01'),modal:(_,html)=>{body=html;}});assert.equal((body.match(/data-stats-action="month-period"/g)||[]).length,1);assert.ok(body.includes('2026-10'));assert.ok(!body.includes('2026-09'));}
+ finally{if(original===undefined)delete globalThis.document;else globalThis.document=original;}
 });

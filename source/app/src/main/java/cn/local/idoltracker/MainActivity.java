@@ -5,6 +5,11 @@ import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.graphics.Color;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Rect;
+import android.util.Base64;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -48,6 +53,8 @@ public final class MainActivity extends Activity {
     private static final int MAX_BYTES = 10 * 1024 * 1024;
     private static final int IMPORT_REQUEST = 101;
     private static final int EXPORT_REQUEST = 102;
+    private static final int AVATAR_REQUEST = 103;
+    private String avatarToken = "";
     private static final Set<String> IMAGE_FIELDS = new HashSet<>(Arrays.asList(
         "image", "image_name", "photo", "photo_name", "images", "photos", "image_files",
         "image_data", "photo_data", "image_url", "photo_url", "image_path", "photo_path"));
@@ -72,6 +79,7 @@ public final class MainActivity extends Activity {
         cleanStoredFile(previousFile, true);
         cleanStoredFile(exportFile, false);
         chooserPending = savedInstanceState != null && savedInstanceState.getBoolean("chooserPending");
+        if (savedInstanceState != null) avatarToken = savedInstanceState.getString("avatarToken", "");
         webView = new WebView(this);
         webView.setBackgroundColor(Color.rgb(255,249,245));
         FrameLayout root = new FrameLayout(this);
@@ -202,6 +210,8 @@ public final class MainActivity extends Activity {
                 // Keep the existing empty schema-2 compatibility container without rewriting it.
                 if (object == rootAssets && "images".equals(key) && child instanceof JSONObject
                     && ((JSONObject) child).length() == 0) continue;
+                if ("avatar".equals(key) && child instanceof String && ((String) child).length() <= 250000
+                    && ((String) child).matches("data:image/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}")) continue;
                 if (IMAGE_FIELDS.contains(key.toLowerCase(Locale.ROOT)) || imageData(child)) {
                     object.remove(key);
                     changed[0] = true;
@@ -339,6 +349,24 @@ public final class MainActivity extends Activity {
             });
         }
 
+        @JavascriptInterface public void pickAvatar(String token) {
+            runOnUiThread(() -> {
+                if (chooserPending) { notice("请先完成当前文件选择", false); return; }
+                try {
+                    Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                    intent.addCategory(Intent.CATEGORY_OPENABLE);
+                    intent.setType("image/*");
+                    intent.putExtra(Intent.EXTRA_LOCAL_ONLY, true);
+                    avatarToken = token;
+                    chooserPending = true;
+                    startActivityForResult(intent, AVATAR_REQUEST);
+                } catch (Exception error) {
+                    chooserPending = false;
+                    notice("无法选择头像：" + error.getMessage(), false);
+                }
+            });
+        }
+
         @JavascriptInterface public void importBackup() {
             runOnUiThread(() -> {
                 if (chooserPending) { notice("请先完成当前文件选择", false); return; }
@@ -357,19 +385,53 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private String avatarData(Uri uri) throws IOException {
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        try (InputStream input = getContentResolver().openInputStream(uri)) {
+            BitmapFactory.decodeStream(input, null, bounds);
+        }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) throw new IOException("无法读取图片，请选择 JPG、PNG 或 WebP");
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        int sample = 1;
+        while (Math.max(bounds.outWidth, bounds.outHeight) / sample > 1024) sample *= 2;
+        options.inSampleSize = sample;
+        options.inPreferredConfig = Bitmap.Config.ARGB_8888;
+        Bitmap source;
+        try (InputStream input = getContentResolver().openInputStream(uri)) {
+            source = BitmapFactory.decodeStream(input, null, options);
+        }
+        if (source == null) throw new IOException("无法解码头像");
+        Bitmap target = Bitmap.createBitmap(256, 256, Bitmap.Config.ARGB_8888);
+        try {
+            Canvas canvas = new Canvas(target);
+            canvas.drawColor(Color.WHITE);
+            int size = Math.min(source.getWidth(), source.getHeight());
+            int left = (source.getWidth() - size) / 2, top = (source.getHeight() - size) / 2;
+            android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG);
+            canvas.drawBitmap(source, new Rect(left, top, left + size, top + size), new Rect(0, 0, 256, 256), paint);
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            target.compress(Bitmap.CompressFormat.JPEG, 85, output);
+            return "data:image/jpeg;base64," + Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP);
+        } finally { source.recycle(); target.recycle(); }
+    }
+
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != IMPORT_REQUEST && requestCode != EXPORT_REQUEST) return;
+        if (requestCode != IMPORT_REQUEST && requestCode != EXPORT_REQUEST && requestCode != AVATAR_REQUEST) return;
         if (resultCode != RESULT_OK || data == null || data.getData() == null) {
             chooserPending = false;
             if (requestCode == EXPORT_REQUEST) exportFile.delete();
-            notice(requestCode == EXPORT_REQUEST ? "已取消导出" : "已取消导入", false);
+            notice(requestCode == AVATAR_REQUEST ? "已取消选择头像" : requestCode == EXPORT_REQUEST ? "已取消导出" : "已取消导入", false);
             return;
         }
         final Uri uri = data.getData();
         new Thread(() -> {
             try {
-                if (requestCode == IMPORT_REQUEST) {
+                if (requestCode == AVATAR_REQUEST) {
+                    String avatar = avatarData(uri);
+                    callback("if(window.onNativeAvatar)window.onNativeAvatar(" + JSONObject.quote(avatarToken) + "," + JSONObject.quote(avatar) + ");");
+                } else if (requestCode == IMPORT_REQUEST) {
                     String content = new String(jsonBytes(readUtf8(getContentResolver().openInputStream(uri)), false), StandardCharsets.UTF_8);
                     callback("if(window.onNativeImport)window.onNativeImport(" + JSONObject.quote(content) + ");");
                 } else {
@@ -384,7 +446,7 @@ public final class MainActivity extends Activity {
                     notice("备份已导出", true);
                 }
             } catch (Exception error) {
-                notice((requestCode == IMPORT_REQUEST ? "导入失败：" : "导出失败：") + error.getMessage(), false);
+                notice((requestCode == AVATAR_REQUEST ? "头像读取失败：" : requestCode == IMPORT_REQUEST ? "导入失败：" : "导出失败：") + error.getMessage(), false);
             } finally {
                 runOnUiThread(() -> chooserPending = false);
             }
@@ -393,6 +455,7 @@ public final class MainActivity extends Activity {
 
     @Override protected void onSaveInstanceState(Bundle outState) {
         outState.putBoolean("chooserPending", chooserPending);
+        outState.putString("avatarToken", avatarToken);
         super.onSaveInstanceState(outState);
     }
 

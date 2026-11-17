@@ -21,16 +21,16 @@ BT = SDK / 'build-tools' / '35.0.0'
 ANDROID = SDK / 'platforms' / 'android-35' / 'android.jar'
 BUILD = ROOT / 'build'
 SIGNING = ROOT / 'private-signing'
-VERSION = '1.1.2'
-VERSION_CODE = 4
+VERSION = '1.1.5'
+VERSION_CODE = 7
 OUT = ROOT / 'release' / VERSION
 PRIVATE = ROOT / 'private-test-artifacts' / VERSION
 APK = OUT / ('偶像活动手账_Android_v' + VERSION + '.apk')
 LEGACY_APK = ROOT / 'release/偶像活动手账_Android_v1.0.0.apk'
-UPGRADE_APK = ROOT / 'release/1.1.1/偶像活动手账_Android_v1.1.1.apk'
+UPGRADE_APK = ROOT / 'release/1.1.4/偶像活动手账_Android_v1.1.4.apk'
 ASSET_ALLOWLIST = (
     'seed-backup.json', 'www/index.html', 'www/style.css', 'www/stats.css',
-    'www/core.js', 'www/pinyin.js', 'www/stats-ui.js', 'www/app.js',
+    'www/people.js', 'www/core.js', 'www/pinyin.js', 'www/stats-ui.js', 'www/app.js',
 )
 
 
@@ -49,7 +49,7 @@ def validate_public_assets():
         return result
     seed = json.loads((assets / 'seed-backup.json').read_text(encoding='utf-8-sig'), object_pairs_hook=unique_object)
     if json.dumps(seed, sort_keys=True) != json.dumps(public_seed(), sort_keys=True):
-        raise RuntimeError('公开 APK 种子必须是严格空白的 version 2 数据；不允许历史、图片、预算或 source/exported 私人字段。请运行 prepare_seed.py。')
+        raise RuntimeError('公开 APK 种子必须是严格空白的 version 5 数据；不允许历史、图片、预算或 source/exported 私人字段。请运行 prepare_seed.py。')
     return assets
 
 

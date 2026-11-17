@@ -1,0 +1,7 @@
+build/
+private-signing/
+private-test-artifacts/
+__pycache__/
+*.py[cod]
+*.class
+*.apk
