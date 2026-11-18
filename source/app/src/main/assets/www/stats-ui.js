@@ -1,8 +1,8 @@
 (function (root) {
   'use strict';
-  const EVENT_LABELS = { performance: '演出', phone_photo:'手机合影', online_cheki: '电切 / 网签', bonus_only: '仅特典', off_meeting: 'Off 会', theme_homework: '宿题/主题', merch_only: '仅买周边', other: '其它活动' };
-  const FORM_LABELS = { cheki: '普通切', signed: '签名切', unsigned: '无签切', online: '电切 / 网签', theme: '主题切', homework: '宿题/主题', other: '其它特典' };
-  const view = { citiesExpanded: false, venuesExpanded: false, citiesSort: 'cost', venuesSort: 'cost', merchExpanded: false, monthsExpanded: false };
+  const EVENT_LABELS = { performance: '演出', phone_photo:'手机合影', online_cheki: '电切', bonus_only: '单独特典会', off_meeting: 'off会', theme_homework: '宿题/主题', merch_only: '周边', other: '其它活动' };
+  const FORM_LABELS = { cheki: '普通切', signed: '签名切', unsigned: '无签切', online: '电切', theme: '主题切', homework: '宿题/主题', other: '其它特典' };
+  const view = { citiesExpanded: false, venuesExpanded: false, citiesSort: 'cost', venuesSort: 'cost', merchExpanded: false, monthsExpanded: false, membersExpanded: false, groupsExpanded: false, organizersExpanded: false };
   let current = null;
   const fallbackEscape = value => String(value == null ? '' : value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
   const e = (ctx, value) => (ctx.esc || fallbackEscape)(String(value == null ? '' : value));
@@ -143,33 +143,85 @@
     if (!data.rows.length) return '<div class="empty">本时段暂无活动记录。</div>';
     return '<p class="chart-note">仅显示有活动记录的月份</p><div class="card"><div id="stats-monthly">' + monthlyRows(ctx, data) + '</div><p class="chart-note">按当前所选日期汇总，首尾月份仅计算范围内的记录，与上方趋势口径一致。点按月份查看该月。' + (data.truncated ? '本范围共 ' + data.totalMonths + ' 个月，表格仅显示最近 120 个月；总览与趋势仍包含全部所选记录。' : '') + '</p></div>';
   }
+  function entityAvatar(ctx, kind, id, name) {
+    if (root.IdolPeople && typeof root.IdolPeople.avatar === 'function' && ctx.state) {
+      const profile = kind === 'members'
+        ? ctx.C.resolveMember(ctx.state, id)
+        : kind === 'groups'
+          ? ctx.C.groupProfile(ctx.state, id)
+          : ctx.C.organizerProfile(ctx.state, id);
+      return root.IdolPeople.avatar(ctx, profile, 'sm');
+    }
+    return '<span class="avatar sm" aria-hidden="true">' + e(ctx, String(name || '?').slice(0, 1)) + '</span>';
+  }
+  function entityRows(ctx, kind, rows, periodTotal, emptyMsg) {
+    if (!rows.length) return '<div class="empty">' + e(ctx, emptyMsg) + '</div>';
+    const expanded = !!view[kind + 'Expanded'];
+    const visible = rows.slice(0, expanded ? rows.length : 5);
+    const topCost = Math.max(1, rows[0].cost || 0);
+    return visible.map((row, index) => {
+      const parts = [];
+      if (row.chekiCount) parts.push('特典 ' + row.chekiCount + ' 张');
+      if (row.phoneCount) parts.push('手机 ' + row.phoneCount + ' 张');
+      if (row.merchCount) parts.push('周边 ' + row.merchCount + ' 件');
+      if (row.eventCount) parts.push('主办 ' + row.eventCount + ' 场');
+      if (periodTotal > 0) parts.push('占本期 ' + percent(row.cost, periodTotal));
+      const width = row.cost > 0 ? Math.max(4, Math.min(100, row.cost / topCost * 100)) : 0;
+      return '<button type="button" class="stats-entity-row" data-stats-action="entity-open" data-entity="' + e(ctx, kind) + '" data-id="' + e(ctx, row.id) + '">' +
+        '<div class="stats-entity-top">' +
+        '<span class="stats-entity-left"><span class="rank-index">' + (index + 1) + '</span>' + entityAvatar(ctx, kind, row.id, row.name) +
+        '<span class="stats-entity-meta"><strong>' + e(ctx, row.name) + '</strong><small>' + e(ctx, parts.join(' · ') || '暂无消费数量') + '</small></span></span>' +
+        '<span class="stats-entity-right"><strong>' + currency(ctx, row.cost) + '</strong><span class="muted">›</span></span>' +
+        '</div>' +
+        '<div class="bar-track" aria-hidden="true"><i style="width:' + width.toFixed(2) + '%"></i></div>' +
+        '</button>';
+    }).join('') + (rows.length > 5 ? '<button type="button" class="text stats-show-all" data-stats-action="entity-expand" data-entity="' + e(ctx, kind) + '">' + (expanded ? '收起' : '查看全部 ' + rows.length + ' 项') + '</button>' : '');
+  }
+  function entitySpendSection(ctx, stats, entitySpend) {
+    const scopeLabel = ctx.range && ctx.range.label ? ctx.range.label : '全部时间';
+    const blocks = [
+      { kind: 'members', title: '成员花费', unit: '位', empty: '本时段暂无成员消费记录', rows: entitySpend.members || [] },
+      { kind: 'groups', title: '团体花费', unit: '个', empty: '本时段暂无团体消费记录', rows: entitySpend.groups || [] },
+      { kind: 'organizers', title: '事务所花费', unit: '家', empty: '本时段暂无事务所消费记录', rows: entitySpend.organizers || [] },
+    ];
+    return '<div class="section-title row"><h2>对象花费</h2><small>' + e(ctx, scopeLabel + ' · 按金额降序') + '</small></div>' +
+      blocks.map(block => {
+        const sum = block.rows.reduce((total, row) => total + row.cost, 0);
+        return '<div class="card entity-spend-card"><div class="row entity-spend-head"><h3>' + e(ctx, block.title) + '</h3><small>' +
+          (block.rows.length ? block.rows.length + ' ' + block.unit + ' · 合计 ' + currency(ctx, sum) : '暂无消费') +
+          '</small></div><div id="stats-entity-' + block.kind + '">' + entityRows(ctx, block.kind, block.rows, stats.total, block.empty) + '</div></div>';
+      }).join('') +
+      '<p class="chart-note">均按所选时段与花费金额由高到低排序；多人合影与联合关联按人数或关联对象均摊至分；点按条目可查看对应详情。</p>';
+  }
   function render(ctx) {
     const C = ctx.C, stats = C.stats(ctx.records), data = buildTrend(ctx), activeDays = new Set(ctx.records.map(row => row.date)).size;
     const forms = Object.entries(stats.forms).sort((a, b) => b[1].cost - a[1].cost || b[1].count - a[1].count);
     const totalCount = stats.eventCount;
-    const types = Object.keys(stats.eventTypes).filter(type=>stats.eventTypes[type]>0);
+    const types = Object.keys(stats.eventTypes).filter(type=>stats.eventTypes[type]>0).sort((a, b) => (stats.eventTypes[b] || 0) - (stats.eventTypes[a] || 0) || a.localeCompare(b, 'zh'));
     const months = buildMonthly(ctx);
-    current = { ctx, stats, data, months };
+    const entitySpend = typeof C.entitySpendingSummary === 'function' ? C.entitySpendingSummary(ctx.state || { records: ctx.records, members: [], config: {} }, ctx.records) : { members: [], groups: [], organizers: [] };
+    current = { ctx, stats, data, months, entitySpend };
     let html = '<section id="idol-stats"><div class="actions"><button data-stats-action="calendar" class="outline">偶活日历</button><button data-stats-action="annual" class="outline">年度回顾</button></div><p class="stats-scope">统计范围：' + e(ctx, rangeLabel(ctx)) + '</p><div class="metric-grid">';
     html += metric(ctx, '总支出', currency(ctx, stats.total), stats.eventCount + ' 条活动，含全部消费', 'total');
     html += metric(ctx, '演出场次', String(stats.eventTypes.performance || 0), '仅活动类型为演出的记录', 'performances');
     html += metric(ctx, '特典张', String(stats.ticketCount), stats.ranking.filter(row => row.kind === 'individual' && row.count > 0).length + ' 位成员 · ' + stats.ranking.filter(row => row.kind === 'group' && row.count > 0).length + ' 个团体', 'benefits');
     html += metric(ctx, '有记录的日期', String(activeDays) + '<span class="stats-unit"> 天</span>', '同一天多条活动只计 1 天', 'days');
     html += '</div><div class="card stats-averages"><div><small>每条活动平均</small><strong>' + currency(ctx, totalCount ? Math.round(stats.total / totalCount) : 0) + '</strong></div><div><small>每个活动日平均</small><strong>' + currency(ctx, activeDays ? Math.round(stats.total / activeDays) : 0) + '</strong></div>' + (ctx.periodKind === 'year' ? '<div><small>全年月均 · 除以 12</small><strong>' + currency(ctx, Math.round(stats.total / 12)) + '</strong></div>' : '') + '</div>';
-    html += comparison(ctx, stats);
+    html += entitySpendSection(ctx, stats, entitySpend);
     const tickets=C.ticketSummary(ctx.records);
-    if(tickets.quantity)html+='<div class="section-title"><h2>门票</h2></div><div class="card"><p>'+tickets.quantity+' 张 · 免费 '+tickets.free+' 张 · 付费 '+tickets.paid+' 张</p>'+tickets.types.map(type=>'<div class="detail-line"><span>'+e(ctx,type.name)+' · '+type.count+' 张</span><strong>'+currency(ctx,type.cost)+'</strong></div>').join('')+'</div>';
     const categories = [
       {label:'门票',kind:'ticket',cost:stats.ticket,present:tickets.quantity>0||stats.ticket>0},
       {label:'Drink 代',kind:'drink',cost:stats.drink,present:stats.drink>0},
       {label:'特典',kind:'benefits',cost:stats.benefit,present:stats.ticketCount>0||stats.benefit>0,note:stats.ticketCount+' 张'},
       {label:'手机合影',kind:'phone',cost:stats.phone||0,present:(stats.phoneCount||0)>0||(stats.phone||0)>0,note:(stats.phoneCount||0)+' 张'},
       {label:'周边',kind:'merch',cost:stats.merch,present:stats.merchCount>0||stats.merch>0}
-    ].filter(category=>category.present);
-    html += '<div class="section-title row"><h2>钱花在哪里</h2><small>占本期总支出</small></div><div class="card">' + (categories.map(category=>bar(ctx,category.label,category.cost,stats.total,category.note,category.kind)).join('')||'<div class="empty">本时段暂无消费明细。</div>') + '</div>';
+    ].filter(category=>category.present).sort((a, b) => b.cost - a.cost || a.label.localeCompare(b.label, 'zh'));
+    html += '<div class="section-title row"><h2>钱花在哪里</h2><small>按金额排序 · 占本期总支出</small></div><div class="card">' + (categories.map(category=>bar(ctx,category.label,category.cost,stats.total,category.note,category.kind)).join('')||'<div class="empty">本时段暂无消费明细。</div>') + '</div>';
+    html += comparison(ctx, stats);
     html += trend(ctx, data);
-    html += '<div class="section-title row"><h2>活动分布</h2><small>共 ' + totalCount + ' 条</small></div><div class="card"><div class="stats-type-grid">' + types.map(type => '<button class="stats-type" data-stats-action="type" data-type="' + e(ctx, type) + '"><span>' + e(ctx, EVENT_LABELS[type] || type) + '</span><strong>' + (stats.eventTypes[type] || 0) + '<small> 条</small></strong></button>').join('') + '</div>'+(types.length?'':'<div class="empty">本时段暂无活动记录。</div>')+'<p class="chart-note">点按类型查看记录；一次活动无论包含几项消费，都只计 1 条。</p></div>';
+    html += '<div class="section-title row"><h2>活动分布</h2><small>共 ' + totalCount + ' 条</small></div><div class="card"><div class="stats-type-grid">' + types.map(type => '<button class="stats-type" data-stats-action="type" data-type="' + e(ctx, type) + '"><span>' + e(ctx, EVENT_LABELS[type] || type) + '</span><strong>' + (stats.eventTypes[type] || 0) + '<small> 条</small></strong></button>').join('') + '</div>'+(types.length?'':'<div class="empty">本时段暂无活动记录。</div>')+'<p class="chart-note">按活动次数由高到低排列；点按类型查看记录。</p></div>';
     html += '<div class="section-title"><h2>特典形式</h2></div><div class="card">' + (forms.length ? forms.map(([format, row]) => bar(ctx, ctx.C.benefitTypes(ctx.state)[format] || FORM_LABELS[format] || format, row.cost, stats.benefit, row.count + ' 张', 'form.'+format)).join('') : '<div class="empty">本时段没有特典记录。</div>') + '<p class="chart-note">金额占比以特典支出为基数。旧记录未指定形式时，按活动类型兼容归类。</p></div>';
+    if(tickets.quantity)html+='<div class="section-title"><h2>门票</h2></div><div class="card"><p>'+tickets.quantity+' 张 · 免费 '+tickets.free+' 张 · 付费 '+tickets.paid+' 张</p>'+tickets.types.slice().sort((a,b)=>b.cost-a.cost||b.count-a.count).map(type=>'<div class="detail-line"><span>'+e(ctx,type.name)+' · '+type.count+' 张</span><strong>'+currency(ctx,type.cost)+'</strong></div>').join('')+'</div>';
     html += merchandise(ctx, stats);
     html += '<p class="subtle">统计范围：' + e(ctx, rangeLabel(ctx)) + '。按活动日期归属，金额计算精确到分；平均值四舍五入至分。团体特典不计入个人排行。所有录入均为实付价，兼容旧版导入记录的历史金额。' + (ctx.periodKind === 'year' ? '全年月均固定除以 12，包含没有记录及尚未结束的月份。' : '') + '</p></section>';
     return html;
@@ -203,13 +255,31 @@
   function bind(ctx) {
     const host = document.querySelector('#main #idol-stats');
     if (!host) return;
-    const snapshot = current && current.ctx === ctx ? current : { ctx, stats: ctx.C.stats(ctx.records), data: buildTrend(ctx), months: buildMonthly(ctx) };
+    const snapshot = current && current.ctx === ctx ? current : {
+      ctx,
+      stats: ctx.C.stats(ctx.records),
+      data: buildTrend(ctx),
+      months: buildMonthly(ctx),
+      entitySpend: typeof ctx.C.entitySpendingSummary === 'function' ? ctx.C.entitySpendingSummary(ctx.state || { records: ctx.records, members: [], config: {} }, ctx.records) : { members: [], groups: [], organizers: [] },
+    };
     host.onclick = event => {
       const button = event.target.closest('[data-stats-action]');
       if (!button || !host.contains(button)) return;
       const action = button.dataset.statsAction;
       try {
-        if(action==='location-detail'){if(ctx.onLocation)ctx.onLocation(button.dataset.location,button.dataset.name,button.dataset.city);}
+        if (action === 'entity-expand') {
+          const kind = button.dataset.entity;
+          if (!['members', 'groups', 'organizers'].includes(kind)) return;
+          view[kind + 'Expanded'] = !view[kind + 'Expanded'];
+          const emptyMsg = kind === 'members' ? '本时段暂无成员消费记录' : kind === 'groups' ? '本时段暂无团体消费记录' : '本时段暂无事务所消费记录';
+          host.querySelector('#stats-entity-' + kind).innerHTML = entityRows(ctx, kind, (snapshot.entitySpend && snapshot.entitySpend[kind]) || [], snapshot.stats.total, emptyMsg);
+        } else if (action === 'entity-open') {
+          const kind = button.dataset.entity, id = button.dataset.id;
+          if (kind === 'members' && ctx.onMember) ctx.onMember(id);
+          else if (kind === 'groups' && ctx.onGroup) ctx.onGroup(id);
+          else if (kind === 'organizers' && ctx.onOrganizer) ctx.onOrganizer(id);
+        }
+        else if(action==='location-detail'){if(ctx.onLocation)ctx.onLocation(button.dataset.location,button.dataset.name,button.dataset.city);}
         else if(action==='calendar'){root.IdolExtras.calendar(ctx);}
         else if(action==='annual'){root.IdolExtras.annual(ctx);}
         else if (action === 'detail') { if(ctx.onDetail) ctx.onDetail(button.dataset.detail); }

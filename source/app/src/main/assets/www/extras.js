@@ -66,13 +66,17 @@
       editPrice(ctx, button.dataset.editPrice),
     );
     ctx.allOn('[data-delete-price]', 'click', (button) => {
-      if (!confirm('删除这个价格预设？')) return;
-      const next = C.clone(ctx.state);
-      next.config.price_presets = presets.filter(
-        (preset) => preset.id !== button.dataset.deletePrice,
+      (ctx.askConfirm || ((o, fn) => { if (confirm(o.message || o)) fn(); }))(
+        { title: '删除价格预设', message: '确认删除这个价格预设？', okText: '确认删除', danger: true },
+        () => {
+          const next = C.clone(ctx.state);
+          next.config.price_presets = presets.filter(
+            (preset) => preset.id !== button.dataset.deletePrice,
+          );
+          commit(ctx, next);
+          pricing(ctx);
+        },
       );
-      commit(ctx, next);
-      pricing(ctx);
     });
     ctx.allOn('[data-edit-benefit]', 'click', (button) =>
       editType(ctx, button.dataset.editBenefit),
@@ -143,12 +147,6 @@
           { '': '任意', signed: '有签', unsigned: '无签' },
           old.signature || '',
         ) +
-        ctx.select(
-          '主题条件',
-          'preset-themed',
-          { no: '任意', yes: '仅主题' },
-          old.themed ? 'yes' : 'no',
-        ) +
         '</div>' +
         ctx.field(
           '单价（元）',
@@ -204,7 +202,7 @@
         format: ctx.read('preset-format'),
         size: ctx.read('preset-size'),
         signature: ctx.read('preset-signature'),
-        themed: ctx.read('preset-themed') === 'yes',
+        themed: ctx.read('preset-format') === 'theme' || Boolean(old.themed),
         price: C.amount(C.cents(ctx.read('preset-price'))),
       };
       next.config.price_presets = (next.config.price_presets || [])
@@ -461,5 +459,97 @@
     }
     paint();
   }
-  root.IdolExtras = { pricing, preferences, calendar, annual };
+  function budgetManager(ctx) {
+    const now = new Date();
+    const fallbackMonth =
+      String(now.getFullYear()).padStart(4, '0') +
+      '-' +
+      String(now.getMonth() + 1).padStart(2, '0');
+    let month = (ctx.anchor && /^\d{4}-\d{2}/.test(ctx.anchor) ? ctx.anchor.slice(0, 7) : fallbackMonth);
+    function validMonth(value) {
+      if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(value) || value.startsWith('0000')) {
+        throw new Error('请选择有效的月份（YYYY-MM）');
+      }
+      return value;
+    }
+    function paint() {
+      const overrides = ctx.state.config.monthly_budgets || {};
+      const defaultBudget = ctx.state.config.monthly_budget || 0;
+      const hasOverride = Object.prototype.hasOwnProperty.call(overrides, month);
+      const currentValue = hasOverride ? overrides[month] : defaultBudget;
+      const entries = Object.entries(overrides).sort((a, b) => b[0].localeCompare(a[0]));
+      ctx.modal(
+        '预算管理',
+        '<div class="card">' +
+          '<h3>指定月份预算</h3>' +
+          ctx.field('月份', 'budget-month', month, 'month') +
+          ctx.field('该月预算金额（元）；0 表示不设预算', 'budget-month-amount', currentValue, 'text', 'inputmode="decimal"') +
+          '<p class="subtle">' +
+          (hasOverride ? '本月已单独设置预算，将优先于默认月预算。' : '本月暂未单独设置，当前沿用默认月预算。') +
+          '</p>' +
+          '<div class="actions"><button id="save-month-budget" class="primary">保存该月预算</button>' +
+          (hasOverride ? '<button id="clear-month-budget" class="outline">恢复默认</button>' : '') +
+          '</div></div>' +
+          '<div class="section-title"><h3>默认每月预算</h3></div>' +
+          '<div class="card">' +
+          ctx.field('默认金额（元）；未单独设置的月份使用', 'budget-default-amount', defaultBudget, 'text', 'inputmode="decimal"') +
+          '<button id="save-default-budget" class="outline" style="width:100%">保存默认月预算</button>' +
+          '</div>' +
+          (entries.length
+            ? '<div class="section-title row"><h3>已单独设置的月份</h3><small>' + entries.length + ' 个</small></div>' +
+              entries
+                .map(
+                  ([key, value]) =>
+                    '<button class="profile-row" data-budget-month="' +
+                    ctx.esc(key) +
+                    '"><span><strong>' +
+                    ctx.esc(key) +
+                    '</strong><small>单独预算 ' +
+                    ctx.esc(ctx.money(ctx.C.cents(value))) +
+                    '</small></span><span>修改 ›</span></button>',
+                )
+                .join('')
+            : '') +
+          '<div id="form-error" class="error"></div>' +
+          '<p class="subtle">预算按自然月使用，总览界面自动读取当月对应预算。</p>',
+      );
+      ctx.on('#budget-month', 'change', () => {
+        month = validMonth(ctx.read('budget-month'));
+        paint();
+      });
+      ctx.on('#save-month-budget', 'click', () => {
+        month = validMonth(ctx.read('budget-month'));
+        const next = ctx.C.clone(ctx.state);
+        next.config.monthly_budgets = Object.assign({}, next.config.monthly_budgets || {}, {
+          [month]: ctx.C.amount(ctx.C.cents(ctx.read('budget-month-amount'))),
+        });
+        commit(ctx, next);
+        ctx.notify('已保存 ' + month + ' 预算');
+        paint();
+      });
+      ctx.on('#clear-month-budget', 'click', () => {
+        const next = ctx.C.clone(ctx.state);
+        if (next.config.monthly_budgets) {
+          delete next.config.monthly_budgets[month];
+          if (!Object.keys(next.config.monthly_budgets).length) delete next.config.monthly_budgets;
+        }
+        commit(ctx, next);
+        ctx.notify('已恢复 ' + month + ' 使用默认预算');
+        paint();
+      });
+      ctx.on('#save-default-budget', 'click', () => {
+        const next = ctx.C.clone(ctx.state);
+        next.config.monthly_budget = ctx.C.amount(ctx.C.cents(ctx.read('budget-default-amount')));
+        commit(ctx, next);
+        ctx.notify('默认月预算已保存');
+        paint();
+      });
+      ctx.allOn('[data-budget-month]', 'click', (button) => {
+        month = button.dataset.budgetMonth;
+        paint();
+      });
+    }
+    paint();
+  }
+  root.IdolExtras = { pricing, preferences, calendar, annual, budgetManager };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

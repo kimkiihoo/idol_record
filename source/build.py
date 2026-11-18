@@ -21,13 +21,13 @@ BT = SDK / 'build-tools' / '35.0.0'
 ANDROID = SDK / 'platforms' / 'android-35' / 'android.jar'
 BUILD = ROOT / 'build'
 SIGNING = ROOT / 'private-signing'
-VERSION = '1.2.3'
-VERSION_CODE = 11
+VERSION = '1.3.0'
+VERSION_CODE = 14
 OUT = ROOT / 'release' / VERSION
 PRIVATE = ROOT / 'private-test-artifacts' / VERSION
 APK = OUT / ('偶像活动手账_Android_v' + VERSION + '.apk')
 LEGACY_APK = ROOT / 'release/偶像活动手账_Android_v1.0.0.apk'
-UPGRADE_APK = ROOT / 'release/1.2.1/偶像活动手账_Android_v1.2.1.apk'
+UPGRADE_APK = ROOT / 'release/1.2.5/偶像活动手账_Android_v1.2.5.apk'
 ASSET_ALLOWLIST = (
     'seed-backup.json', 'www/index.html', 'www/style.css', 'www/stats.css',
     'www/extras.js', 'www/photos.js', 'www/people.js', 'www/core.js', 'www/pinyin.js', 'www/stats-ui.js', 'www/app.js',

@@ -30,7 +30,8 @@ class MiniNode {
   get textContent() { return this._text || decode(this._html.replace(/<[^>]*>/g, '')); }
   get innerText() { return this.textContent; }
   addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
-  dispatch(type) { for (const fn of this.listeners[type] || []) fn({ target: this, preventDefault() {} }); }
+  closest(selector) { for (let n = this; n; n = n.parent) if (this.doc.matches(n, selector)) return n; return null; }
+  dispatch(type) { for (const fn of this.listeners[type] || []) fn({ target: this, preventDefault() {} }); if (type === 'click') { for (let p = this; p; p = p.parent) if (typeof p.onclick === 'function') p.onclick({ target: this, preventDefault() {} }); } }
   click() { this.dispatch('click'); }
   focus() { this.doc.activeElement = this; this.dispatch('focus'); }
   scrollIntoView() {}
@@ -62,11 +63,15 @@ class MiniDocument {
   querySelector(selector) { return this.find(selector)[0] || null; }
   querySelectorAll(selector) { return this.find(selector); }
   parse(parent, html) {
-    for (const match of html.matchAll(/<([a-z][a-z0-9-]*)\b([^>]*)>/gi)) {
+    let scope = parent;
+    for (const match of html.matchAll(/<(\/?[a-z][a-z0-9-]*)\b([^>]*)>/gi)) {
+      if (match[1].toLowerCase() === '/section') { scope = parent; continue; }
+      if (match[1].startsWith('/')) continue;
       const attrs = {};
       for (const a of match[2].matchAll(/([\w-]+)(?:="([^"]*)"|='([^']*)')?/g)) attrs[a[1]] = decode(a[2] ?? a[3] ?? '');
       if (!attrs.id && !Object.keys(attrs).some(k => k.startsWith('data-'))) continue;
-      const node = new MiniNode(this, match[1], attrs, parent);
+      const node = new MiniNode(this, match[1], attrs, scope);
+      if (match[1].toLowerCase() === 'section' && attrs.id === 'idol-stats') scope = node;
       const rest = html.slice(match.index + match[0].length);
       if (match[1] === 'textarea') node.value = decode(rest.split('</textarea>')[0]);
       if (match[1] === 'select') {
@@ -80,10 +85,12 @@ class MiniDocument {
 function fixture(records) { return { ...C.createEmptyState(), records }; }
 function event(id = 'event-1', interactions = []) { return { id, date: '2026-10-28', event_type: 'performance', event_name: '测试演出', city: '测试城市', venue: '测试场地', ticket_fee: 0, drink_fee: 0, interactions }; }
 function launch(input, options = {}) {
-  const document = new MiniDocument(), writes = [], exports = [], photoRequests=[], savedPhotos=[];
+  const document = new MiniDocument(), writes = [], exports = [], photoRequests=[], photoLimits=[], photoAllowVideos=[], savedPhotos=[];
   const bridge = {
     readState: () => JSON.stringify(input),
-    pickPhoto: token=>photoRequests.push(token),
+    pickPhoto: token=>{photoRequests.push(token);photoLimits.push(1);photoAllowVideos.push(false);},
+    pickPhotos: (token,max)=>{photoRequests.push(token);photoLimits.push(max);photoAllowVideos.push(false);},
+    pickMedia: (token,max,allowVideo)=>{photoRequests.push(token);photoLimits.push(max);photoAllowVideos.push(!!allowVideo);},
     savePhotoToGallery: src=>savedPhotos.push(src),
     lastExportTime:()=>options.lastExportTime||0,
     writeState: text => { writes.push(JSON.parse(text)); return '{"ok":true}'; },
@@ -102,11 +109,12 @@ function launch(input, options = {}) {
     renderFootprints: () => '',
     bind: ctx => document.querySelector('#review-ranked-name')?.addEventListener('click', () => { const row = ctx.C.stats(ctx.records).ranking[0]; ctx.onMember(row.name, row.kind); })
   };
+  if (options.realStats) vm.runInContext(fs.readFileSync(path.join(base, 'stats-ui.js'), 'utf8'), sandbox);
   vm.runInContext(fs.readFileSync(path.join(base, 'people.js'), 'utf8'), sandbox);
   for(const name of ['extras.js','photos.js'])vm.runInContext(fs.readFileSync(path.join(base,name),'utf8'),sandbox);
   vm.runInContext(fs.readFileSync(path.join(base, 'app.js'), 'utf8'), sandbox);
   const get = selector => { const node = document.querySelector(selector); assert.ok(node, 'Missing control: ' + selector); return node; };
-  return { document, sandbox, writes, exports, photoRequests, savedPhotos, get, click: selector => get(selector).click() };
+  return { document, sandbox, writes, exports, photoRequests, photoLimits, photoAllowVideos, savedPhotos, get, click: selector => get(selector).click() };
 }
 
 test('UI export preserves a valid near-limit state without pretty-print expansion', () => {
@@ -241,14 +249,14 @@ test('multi-photo editor and statistics member filter preserve shared identity a
   app.get('#i-kind').value='multi';app.get('#i-kind').dispatch('change');
   app.get('#i-name').value='甲，乙';app.get('#i-name').dispatch('input');
   app.get('#i-price').value='10.01';app.get('#i-price').dispatch('input');
-  app.get('#i-shot').value='2026-10-28T19:30';app.click('#save-item');
+  app.get('#i-shot').value='2026-10-28';app.click('#save-item');
   const saved=app.writes.at(-1);
   assert.equal(saved.records[0].interactions[0].members.join(','),'甲,乙');
   assert.equal(saved.records[0].interactions[0].total_cost,10.01);
   app.click('#modal-close');app.click('#nav [data-tab=stats]');app.click('[data-stats-section=photos]');app.click('[data-period=all]');
   app.get('#photo-member').value='乙';app.get('#photo-member').dispatch('change');
   assert.match(app.get('#photo-results').innerHTML,/甲 \/ 乙/);
-  assert.match(app.get('#photo-results').innerHTML,/2026-10-28 19:30/);
+  assert.match(app.get('#photo-results').innerHTML,/2026-10-28/);assert.doesNotMatch(app.get('#photo-results').innerHTML,/19:30/);
   assert.match(app.get('#photo-results').innerHTML,/¥10.01/);
 });
 
@@ -413,7 +421,7 @@ test('homework activity type remains selectable and new theme cheki is an indepe
 });
 
 test('independent profile manager can create edit and archive members with no recorded interactions',()=>{
- const app=launch(fixture([]));app.click('#nav [data-tab=stats]');app.click('#manage-members');app.click('#manage-create');app.get('#profile-name').value='未互动成员';app.get('#profile-groups').value='团A，团B';app.click('#save-profile');
+ const app=launch(fixture([]));app.click('#nav [data-tab=backup]');app.click('#backup-members');app.click('#manage-create');app.get('#profile-name').value='未互动成员';app.get('#profile-groups').value='团A，团B';app.click('#save-profile');
  const saved=app.writes.at(-1);assert.equal(saved.members[0].groups.join(','),'团A,团B');assert.ok(app.document.querySelector('[data-manage-member]'));
  app.click('[data-manage-member]');app.get('#profile-name').value='新名字';app.get('#profile-archived').value='archived';app.click('#save-profile');
  assert.equal(app.writes.at(-1).members[0].name,'新名字');assert.equal(app.writes.at(-1).members[0].archived,true);assert.ok(app.writes.at(-1).members[0].aliases.includes('未互动成员'));assert.match(app.get('#modal-body').innerHTML,/已归档/);
@@ -421,7 +429,7 @@ test('independent profile manager can create edit and archive members with no re
 });
 
 test('same-name member creation works through profile management with distinct stable IDs',()=>{
- const app=launch(fixture([]));app.click('#nav [data-tab=stats]');app.click('#manage-members');
+ const app=launch(fixture([]));app.click('#nav [data-tab=backup]');app.click('#backup-members');
  for(const group of ['团A','团B']){app.click('#manage-create');app.get('#profile-name').value='同名';app.get('#profile-groups').value=group;app.click('#save-profile');}
  const saved=app.writes.at(-1);assert.equal(saved.members.length,2);assert.notEqual(saved.members[0].id,saved.members[1].id);assert.equal(app.document.querySelectorAll('[data-manage-member]').length,2);
 });
@@ -437,8 +445,8 @@ test('custom benefit creation and price presets drive quick entry while keeping 
  const type=app.writes.at(-1).config.benefit_types[0];assert.equal(type.counts_as_photo,true);
  app.click('#add-price');app.get('#preset-name').value='团A宽幅';app.get('#preset-target').value='团A';app.get('#preset-format').value='custom:'+type.id;app.get('#preset-price').value='88';app.click('#save-price');assert.equal(app.writes.at(-1).config.price_presets[0].price,88);
  app.click('#modal-close');app.click('#nav [data-tab=records]');app.click('[data-period=all]');app.click('[data-event]');app.click('#add-item');app.get('#i-name').value='甲';app.get('#i-name').dispatch('input');app.get('#i-form').value='custom:'+type.id;app.get('#i-form').dispatch('change');assert.equal(app.get('#i-price').value,'88.00');assert.equal(app.document.querySelector('#i-total'),null);
- app.get('#i-size').value='5';app.get('#i-signature').value='signed';app.get('#i-themed').value='yes';app.get('#i-price').value='80';app.get('#i-price').dispatch('input');app.click('#save-item');
- const item=app.writes.at(-1).records[0].interactions[0];assert.equal(item.total_cost,80);assert.equal(item.photo_size,'5');assert.equal(item.signature,'signed');assert.equal(item.is_theme,true);assert.equal(item.benefit_label,'宽幅主题切');
+ app.get('#i-size').value='5';app.get('#i-signature').value='signed';assert.equal(app.document.querySelector('#i-themed'),null);app.get('#i-price').value='80';app.get('#i-price').dispatch('input');app.click('#save-item');
+ const item=app.writes.at(-1).records[0].interactions[0];assert.equal(item.total_cost,80);assert.equal(item.photo_size,'5');assert.equal(item.signature,'signed');assert.equal(item.benefit_label,'宽幅主题切');
 });
 
 test('member quick entry keeps the chosen event supports consecutive saves and undo',()=>{
@@ -472,7 +480,7 @@ test('member merge UI combines two archives and keeps the shared event total',()
 });
 
 test('member archive hides the ranking row while preserving all recorded financial totals',()=>{
- const app=launch(fixture([event('show',[{member:'甲',tickets:3,total_cost:90}])]));app.click('#nav [data-tab=stats]');app.click('[data-member-profile]');app.click('#edit-profile');app.get('#profile-archived').value='archived';app.click('#save-profile');const saved=app.writes.at(-1);assert.equal(C.stats(saved.records).total,9000);assert.equal(C.stats(saved.records).ticketCount,3);assert.equal(app.document.querySelector('[data-member-profile]'),null);app.click('#manage-members');assert.ok(app.document.querySelector('[data-manage-member]'));
+ const app=launch(fixture([event('show',[{member:'甲',tickets:3,total_cost:90}])]));app.click('#nav [data-tab=stats]');app.click('[data-member-profile]');app.click('#edit-profile');app.get('#profile-archived').value='archived';app.click('#save-profile');const saved=app.writes.at(-1);assert.equal(C.stats(saved.records).total,9000);assert.equal(C.stats(saved.records).ticketCount,3);assert.equal(app.document.querySelector('[data-member-profile]'),null);app.click('#nav [data-tab=backup]');app.click('#backup-members');assert.ok(app.document.querySelector('[data-manage-member]'));
 });
 
 test('stale photo callback cannot alter a newly opened editor with the same host name',()=>{
@@ -480,7 +488,7 @@ test('stale photo callback cannot alter a newly opened editor with the same host
 });
 
 test('desktop record imports inherit local stable IDs groups and aliases before records are normalized',()=>{
- const input=fixture([]);input.members=[{id:'current-person',name:'现名',aliases:['旧名'],groups:['团A']}];const app=launch(input);app.sandbox.onNativeImport(JSON.stringify([event('desktop',[{member:'旧名',tickets:1,total_cost:50}])]));app.click('#merge-import');const saved=app.writes.at(-1);assert.equal(saved.records[0].interactions[0].member_id,'current-person');assert.equal(saved.records[0].interactions[0].member,'现名');assert.equal(saved.records[0].interactions[0].participant_groups[0].group,'团A');assert.equal(C.memberCatalog(saved).length,1);
+ const input=fixture([]);input.members=[{id:'current-person',name:'现名',aliases:['旧名'],groups:['团A']}];const app=launch(input);app.sandbox.onNativeImport(JSON.stringify([event('desktop',[{member:'旧名',tickets:1,total_cost:50}])]));assert.equal(app.document.querySelector('#merge-import'),null);assert.match(app.get('#toast').textContent,/桌面|v1\.2\.0/);app.sandbox.onNativeImport(JSON.stringify({format:C.FORMAT,version:6,app_version:'1.1.5',records:[event('v115')]}));assert.equal(app.document.querySelector('#merge-import'),null);app.sandbox.onNativeImport(JSON.stringify({format:C.FORMAT,version:7,app_version:'1.2.0',records:[event('mobile120',[{member:'现名',member_id:'current-person',tickets:1,total_cost:50}])]}));app.click('#merge-import');const saved=app.writes.at(-1);assert.equal(saved.records[0].interactions[0].member_id,'current-person');assert.equal(saved.records[0].interactions[0].member,'现名');assert.equal(C.memberCatalog(saved).length,1);
 });
 
 test('quick entry can create a new activity and carries the selected stable member into its first interaction',()=>{
@@ -598,15 +606,17 @@ test('v1.2.3 UI updates: avatars, synced phone picker, settings rename, organize
  const backupHtml=app.get('#main').innerHTML;
  assert.match(backupHtml,/<h1>设置<\/h1>/);
  assert.doesNotMatch(backupHtml,/备份与设置|KEEP YOUR MEMORIES SAFE|完整备份包含活动|使用说明|消费按活动日期/);
- assert.match(backupHtml,/1\.2\.3.*Android 8\.0/);
+ assert.match(backupHtml,/1\.3\.0.*Android 8\.0/);
+ assert.doesNotMatch(backupHtml,/导出桌面兼容记录|电脑记录|每月预算/);
  app.click('#backup-organizers');
  app.click('#organizer-create');
- app.get('#organizer-new-name').value='新预设社';
- app.click('#confirm-organizer-create');
+ app.get('#organizer-rename-input').value='新预设社';
+ app.click('#confirm-organizer-rename');
  assert.ok(app.writes.at(-1).config.organizers.includes('新预设社'));
  app.get('#organizer-query').value='旧事务所';
  app.get('#organizer-query').dispatch('input');
  app.click('[data-manage-organizer="0"]');
+ app.click('#edit-organizer-profile');
  app.get('#organizer-rename-input').value='联合社';
  app.click('#confirm-organizer-rename');
  const afterRename=app.writes.at(-1);
@@ -617,4 +627,271 @@ test('v1.2.3 UI updates: avatars, synced phone picker, settings rename, organize
  assert.doesNotMatch(indexHtml,/留住每一次相见|<b>⇄<\/b>备份/);
  assert.match(indexHtml,/Idol Recorder/);
  assert.match(indexHtml,/设置<\/button>/);
+});
+
+test('v1.2.4 UI updates: member ranking cleanup, first_met/daysSince, day-only dates, settings header hidden, per-month budgets, group/organizer avatars & batch ops, and multi-photo pick',()=>{
+ const now=new Date(),month=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
+ const av='data:image/jpeg;base64,AAAA';
+ const p1={id:'a1',data:'data:image/png;base64,AAAA',caption:''};
+ const input=fixture([
+  {...event('perf-1',[{member:'甲',tickets:4,total_cost:200,shot_at:'2025-05-05T19:03',attachments:[p1]},{type:'phone',member:'甲',tickets:2,total_cost:60,shot_at:'2025-06-06T21:15'},{type:'group',group_name:'星光团',tickets:3,total_cost:150}]),date:month+'-02',organizer:'幻影社',organizers:['幻影社'],performing_groups:['星光团']},
+  {...event('perf-2',[]),date:month+'-03',organizer:'友社',organizers:['友社'],performing_groups:['月光团']}
+ ]);
+ input.members=[{name:'甲',groups:['星光团'],color:'#123456'}];
+ input.config.organizer_profiles=[{name:'幻影社',avatar:av,note:'幻影简介'}];
+ input.config.group_profiles=[{name:'星光团',avatar:av,note:'星光简介',organizers:['幻影社']}];
+ const app=launch(input);
+ // Overview cards show organizer avatar badges
+ assert.match(app.get('#main').innerHTML,/organizer-badge/);
+ assert.match(app.get('#main').innerHTML,/member-avatar sm/);
+ assert.equal(app.document.querySelector('.app-header').classList.contains('hidden'),false);
+ // Event detail shows clickable organizer chip with avatar, and day-only shot date
+ app.click('[data-event=perf-1]');
+ assert.match(app.get('#modal-body').innerHTML,/organizer-chip/);
+ assert.doesNotMatch(app.get('#modal-body').innerHTML,/19:03/);
+ assert.match(app.get('#modal-body').innerHTML,/拍摄 2025-05-05/);
+ app.click('[data-event-organizer="0"]');
+ // Clicking organizer opens Organizer Detail with affiliated groups + avatars & batch buttons
+ const orgModal=app.get('#modal-body').innerHTML;
+ assert.match(orgModal,/幻影简介/);
+ assert.match(orgModal,/星光团/);
+ assert.match(orgModal,/data-organizer-group/);
+ assert.match(orgModal,/member-avatar/);
+ // Batch assign perf-2 to 幻影社
+ app.click('#organizer-batch-events');
+ app.click('[data-batch-key="perf-2"]');
+ app.click('#save-batch-assign');
+ assert.ok(C.eventOrganizers(app.writes.at(-1).records.find(r=>r.id==='perf-2')).includes('幻影社'));
+ // Batch assign 月光团 to 幻影社
+ app.click('#organizer-batch-groups');
+ app.click('[data-batch-key="月光团"]');
+ app.click('#save-batch-assign');
+ assert.ok(C.groupProfile(app.writes.at(-1),'月光团').organizers.includes('幻影社'));
+ app.click('#modal-close');
+ // Stats -> Members: hides #manage-members, #open-pricing, phone count & HH:mm, keeps group avatar in 团体/团体特典
+ app.click('#nav [data-tab=stats]');
+ assert.equal(app.document.querySelector('#manage-members'),null);
+ assert.equal(app.document.querySelector('#open-pricing'),null);
+ const rankHtml=app.get('#member-results').innerHTML;
+ assert.doesNotMatch(rankHtml,/手机\s*2\s*张|19:03|21:15/);
+ assert.match(rankHtml,/4 张/);
+ assert.match(rankHtml,/最近 2025-06-06/);
+ // Switching memberKind to group shows group avatar
+ app.get('#member-kind').value='group';app.get('#member-kind').dispatch('change');
+ assert.match(app.get('#member-results').innerHTML,/member-avatar/);
+ assert.match(app.get('#member-results').innerHTML,/星光团/);
+ // Switching to 团体 stats section shows group avatar
+ app.click('[data-stats-section=groups]');
+ assert.match(app.get('#group-results').innerHTML,/member-avatar/);
+ // Member detail uses 初次见面 (defaulting to earliest interaction) and 初识天数 (days from 初次见面 to today), manually editable
+ app.click('[data-stats-section=members]');
+ app.get('#member-kind').value='individual';app.get('#member-kind').dispatch('change');
+ app.click('[data-member-profile="甲"]');
+ let memberHtml=app.get('#modal-body').innerHTML;
+ assert.doesNotMatch(memberHtml,/首次互动|互动天数/);
+ assert.match(memberHtml,/<span>初次见面<\/span><span>2025-05-05<\/span>/);
+ assert.match(memberHtml,/<span>初识天数<\/span><span>\d+ 天<\/span>/);
+ assert.doesNotMatch(memberHtml,/19:03/);
+ app.click('#edit-profile');
+ assert.equal(app.get('#profile-first-met').value,'2025-05-05');
+ app.get('#profile-first-met').value='2024-01-01';
+ app.get('#profile-first-met').dispatch('change');
+ app.click('#save-profile');
+ assert.equal(app.writes.at(-1).members[0].first_met,'2024-01-01');
+ app.click('[data-member-profile="甲"]');
+ assert.match(app.get('#modal-body').innerHTML,/<span>初次见面<\/span><span>2024-01-01<\/span>/);
+ // Edit item uses date input for #i-shot
+ app.click('#quick-member');app.click('#quick-open');
+ assert.equal(app.get('#i-shot').attrs.type,'date');
+ // Multi-photo upload via pickPhotos + onNativePhotos
+ app.click('#item-photos-add');
+ assert.equal(app.photoLimits.at(-1),20);
+ app.sandbox.onNativePhotos(app.photoRequests.at(-1),['data:image/png;base64,AAAA','data:image/jpeg;base64,BBBB','data:image/png;base64,CCCC']);
+ assert.equal(app.document.querySelectorAll('#item-photos [data-photo-view]').length,3);
+ app.click('#modal-close');
+ // Settings tab hides .app-header (logo + +记一笔), removes #export-desktop & inline budget, has 管理团体 & 预算管理
+ app.click('#nav [data-tab=backup]');
+ assert.equal(app.document.querySelector('.app-header').classList.contains('hidden'),true);
+ assert.equal(app.document.querySelector('#export-desktop'),null);
+ assert.equal(app.document.querySelector('#budget'),null);
+ // Group management + one-click rename
+ app.click('#backup-groups');
+ assert.match(app.get('#managed-groups').innerHTML,/星光团/);
+ app.click('[data-manage-group="0"]');
+ app.click('#edit-group-profile');
+ app.get('#group-rename-input').value='耀光团';
+ app.click('#confirm-group-save');
+ assert.equal(app.writes.at(-1).members[0].groups[0],'耀光团');
+ assert.deepEqual(app.writes.at(-1).records.find(r=>r.id==='perf-1').performing_groups,['耀光团']);
+ app.click('#modal-close');
+ // Per-month budget manager sets current month's budget and reflects on Home Overview
+ app.click('#backup-budget');
+ app.get('#budget-month').value=month;app.get('#budget-month').dispatch('change');
+ app.get('#budget-month-amount').value='1500';
+ app.click('#save-month-budget');
+ assert.equal(app.writes.at(-1).config.monthly_budgets[month],1500);
+ app.click('#modal-close');
+ app.click('#nav [data-tab=home]');
+ assert.match(app.get('#main').innerHTML,/月预算 ¥1500\.00/);
+ // Verify redesigned vector icons and soft pastel pink theme
+ const idxHtml=fs.readFileSync(path.join(base,'index.html'),'utf8');
+ const styleCss=fs.readFileSync(path.join(base,'style.css'),'utf8');
+ assert.doesNotMatch(idxHtml,/[⌂▤▥▧⚙]/);
+ assert.equal((idxHtml.match(/class="nav-ico"/g)||[]).length,5);
+ assert.match(styleCss,/--bg:#fdf6f8/);
+ assert.doesNotMatch(styleCss,/--green:#174e46|--bg:#f5f4ee/);
+});
+
+test('v1.2.5 UI updates: group 总花费, activity type rules, multi-merch & multi-entity links, terminology, and idol brand icon',()=>{
+ const input=fixture([
+  {...event('cross',[{type:'cheki',cheki_type:'multi',members:['甲','乙'],tickets:1,price_per_ticket:100,total_cost:100}]),performing_groups:['团A','团B']}
+ ]);
+ input.members=[{name:'甲',groups:['团A']},{name:'乙',groups:['团B']}];
+ const app=launch(input);
+ // Req 1: Group detail shows 总花费 (50.00 shared), removing 关联明细金额 and 成员分摊金额
+ app.click('#nav [data-tab=stats]');
+ app.click('[data-stats-section=groups]');
+ app.click('[data-group-profile="团A"]');
+ const groupHtml=app.get('#modal-body').innerHTML;
+ assert.doesNotMatch(groupHtml,/关联明细金额|成员分摊金额/);
+ assert.match(groupHtml,/<span>总花费<\/span><span>¥50\.00<\/span>/);
+ app.click('#modal-close');
+ // Req 3a,b,d,e: +记一笔 hides phone_photo, uses 电切 / 单独特典会 / off会 / 周边, hides city/venue/fees for 电切 & saves venue=线上购买
+ app.click('#add-event');
+ const typeHtml=app.get('#modal-body').innerHTML.match(/<select id="e-type">.*?<\/select>/)[0];
+ assert.doesNotMatch(typeHtml,/value="phone_photo"|电切 \/ 网签|Off会|仅特典/);
+ assert.match(typeHtml,/单独特典会/);
+ assert.match(typeHtml,/电切/);
+ assert.match(typeHtml,/off会/);
+ assert.match(typeHtml,/value="merch_only"[^>]*>周边<\/option>/);
+ app.get('#e-type').value='online_cheki';app.get('#e-type').dispatch('change');
+ assert.equal(app.get('#event-location-fields').classList.contains('hidden'),true);
+ assert.equal(app.get('#event-fee-fields').classList.contains('hidden'),true);
+ app.get('#e-name').value='线上电切场';
+ app.click('#save-event');
+ const savedOnline=app.writes.at(-1).records.find(r=>r.event_name==='线上电切场');
+ assert.equal(savedOnline.venue,'线上购买');
+ assert.equal(savedOnline.city,'-');
+ // Req 3c,f,g: 周边 mode in +记一笔 hides performing_groups and opens multi-merch form with multi-targets & no #i-themed
+ app.click('#modal-close');
+ app.click('#add-event');
+ app.get('#e-type').value='merch_only';app.get('#e-type').dispatch('change');
+ assert.equal(app.get('#event-performing-field').classList.contains('hidden'),true);
+ app.get('#e-name').value='冬日周边订单';
+ app.click('#save-event');
+ const kindHtml=app.get('#modal-body').innerHTML.match(/<select id="i-kind">.*?<\/select>/)[0];
+ assert.match(kindHtml,/多人特典/);
+ assert.match(kindHtml,/团体特典/);
+ assert.doesNotMatch(kindHtml,/多人合影|团切/);
+ assert.equal(app.document.querySelector('#i-themed'),null);
+ assert.equal(app.get('#i-shot-field').classList.contains('hidden'),true);
+ // Add 2 merch items in one entry linked to multiple members, groups, and organizers
+ app.get('#i-name').value='亚克力立牌';app.get('#i-price').value='68';app.get('#i-price').dispatch('input');app.get('#i-qty').value='1';
+ app.click('#add-merch-line');
+ app.get('#merch-sub-name-0').value='生写Pack';app.get('#merch-sub-price-0').value='30';app.get('#merch-sub-qty-0').value='2';
+ app.get('#merch-members').value='甲，乙';
+ app.get('#i-group').value='团A，团B';
+ app.get('#merch-organizers').value='幻影社';
+ app.click('#save-item');
+ const merchOrder=app.writes.at(-1).records.find(r=>r.event_name==='冬日周边订单');
+ assert.equal(merchOrder.venue,'线上购买');
+ assert.equal(merchOrder.interactions.length,2);
+ assert.deepEqual(merchOrder.interactions[0].merch_members,['甲','乙']);
+ assert.deepEqual(merchOrder.interactions[0].affiliated_groups,['团A','团B']);
+ assert.deepEqual(merchOrder.interactions[0].merch_organizers,['幻影社']);
+ assert.equal(merchOrder.interactions[1].item_name,'生写Pack');
+ assert.equal(merchOrder.interactions[1].total_cost,60);
+ app.click('#modal-close');
+ // Merch entry is created from '+ 记一笔' dropdown (no standalone + 记周边 button or reset-filter button on Records)
+ app.click('#nav [data-tab=records]');
+ assert.equal(app.document.querySelector('#add-merch-record'),null);
+ assert.equal(app.document.querySelector('#reset-filter'),null);
+ app.click('#add-event');
+ app.get('#e-type').value='merch_only';app.get('#e-type').dispatch('change');
+ app.get('#e-name').value='单独徽章订单';
+ app.click('#save-event');
+ app.get('#i-name').value='单独徽章';app.get('#i-price').value='25';app.get('#i-price').dispatch('input');
+ app.get('#merch-organizers').value='友社';
+ app.click('#save-item');
+ assert.ok(app.writes.at(-1).records.some(r=>r.event_type==='merch_only'&&r.venue==='线上购买'&&r.interactions[0].item_name==='单独徽章'));
+ // Top idol brand SVG path & custom confirm dialog exist in index.html
+ const idx=fs.readFileSync(path.join(base,'index.html'),'utf8');
+ assert.match(idx,/class="brand-icon"[^>]*><svg viewBox="18 36 72 36"/);
+ assert.match(idx,/id="confirm-dialog"/);
+});
+
+test('v1.3.0 UI updates: search box placement, overview per-member/group/organizer spending & layout order, and phone video support',()=>{
+ const now=new Date(),month=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
+ const vHash='c'.repeat(64);
+ const input=fixture([
+  {...event('m-now-1',[{type:'cheki',cheki_type:'individual',member:'高花费',tickets:2,price_per_ticket:150,total_cost:300,participant_groups:[{member:'高花费',group:'主推团'}]},{type:'cheki',cheki_type:'individual',member:'低花费',tickets:1,price_per_ticket:60,total_cost:60,participant_groups:[{member:'低花费',group:'副团'}]}]),date:month+'-05',organizers:['主社'],performing_groups:['主推团','副团'],ticket_fee:80,drink_fee:20},
+  {...event('m-now-2',[{type:'merch',item_name:'应援棒',quantity:1,price:120,total_cost:120,merch_members:['高花费'],affiliated_groups:['主推团'],merch_organizers:['周边社']}]),date:month+'-08',event_type:'merch_only',city:'-',venue:'线上购买'}
+ ]);
+ input.members=[{name:'高花费',groups:['主推团']},{name:'低花费',groups:['副团']}];
+ const app=launch(input,{realStats:true});
+ // 1. Records search box placed below 4 dropdowns; removed buttons stay absent; event detail wraps主办事务所 safely without shrinking label
+ app.click('#nav [data-tab=records]');
+ const recHtml=app.get('#main').innerHTML;
+ assert.equal(app.document.querySelector('#add-merch-record'),null);
+ assert.equal(app.document.querySelector('#reset-filter'),null);
+ assert.ok(recHtml.indexOf('class="filter-grid"')>=0&&recHtml.indexOf('id="search"')>recHtml.indexOf('id="record-organizer"'));
+ app.click('[data-event="m-now-1"]');
+ assert.match(app.get('#modal-body').innerHTML,/class="card event-detail-card"/);
+ assert.match(app.get('#modal-body').innerHTML,/class="detail-line detail-line-chips"><span>主办事务所<\/span>/);
+ assert.doesNotMatch(app.get('#modal-body').innerHTML,/<span>标签<\/span>/);
+ app.click('#modal-close');
+ // Members & Photos search boxes placed below dropdowns
+ app.click('#nav [data-tab=stats]');
+ const memHtml=app.get('#main').innerHTML;
+ assert.ok(memHtml.indexOf('class="filter-grid"')>=0&&memHtml.indexOf('id="member-search"')>memHtml.indexOf('id="member-order"'));
+ app.click('[data-stats-section=photos]');
+ const photoHtml=app.get('#main').innerHTML;
+ assert.ok(photoHtml.indexOf('class="filter-grid"')>=0&&photoHtml.indexOf('id="photo-search"')>photoHtml.indexOf('id="photo-order"'));
+ // 2. Stats Overview displays current month spending on members, groups, and organizers sorted descending + drill-down
+ app.click('[data-stats-section=overview]');
+ const statsHtml=app.get('#main').innerHTML;
+ assert.ok(statsHtml.includes('对象花费'));
+ assert.ok(statsHtml.includes('成员花费')&&statsHtml.includes('团体花费')&&statsHtml.includes('事务所花费'));
+ // Members: 高花费 (300+120=420) appears before 低花费 (60)
+ assert.ok(statsHtml.indexOf('高花费')>0&&statsHtml.indexOf('高花费')<statsHtml.indexOf('低花费'));
+ // Groups: 主推团 (300+120=420) appears before 副团 (60)
+ assert.ok(statsHtml.indexOf('主推团')<statsHtml.indexOf('副团'));
+ // Organizers: 主社 (80+20+300+60=460) appears before 周边社 (120)
+ assert.ok(statsHtml.indexOf('主社')<statsHtml.indexOf('周边社'));
+ // Section layout hierarchy: 对象花费 -> 钱花在哪里 -> 与上期比较 -> 支出趋势 -> 活动分布 -> 特典形式 -> 门票 -> 周边商品
+ assert.ok(statsHtml.indexOf('对象花费')<statsHtml.indexOf('钱花在哪里'));
+ assert.ok(statsHtml.indexOf('钱花在哪里')<statsHtml.indexOf('与上期比较'));
+ assert.ok(statsHtml.indexOf('与上期比较')<statsHtml.indexOf('支出趋势'));
+ // Drill-down clicks on member / group / organizer open their detail modals
+ app.click('[data-id="主推团"]');
+ assert.match(app.get('#modal-title').textContent,/主推团/);
+ app.click('#modal-close');
+ app.click('[data-id="主社"]');
+ assert.match(app.get('#modal-title').textContent,/主社/);
+ app.click('#modal-close');
+ // 3. Phone photo allows video pickMedia(allowVideo=true), switching away blocks video, album categories keep 全部/演出合影/拍立得合影/手机合影
+ app.click('#nav [data-tab=photos]');
+ assert.deepEqual(app.document.querySelectorAll('[data-album-category]').map(b=>b.dataset.albumCategory),['all','event','cheki','phone']);
+ app.click('#add-phone-photo');
+ app.click('#item-photos-add');
+ assert.equal(app.photoAllowVideos.at(-1),true);
+ app.sandbox.onNativePhotos(app.photoRequests.at(-1),['https://idol.local/photos/'+vHash+'.mp4']);
+ assert.match(app.get('#item-photos').innerHTML,/<video[^>]+src="https:\/\/idol\.local\/photos\/c{64}\.mp4#t=0\.1"[^>]*>/);
+ assert.match(app.get('#item-photos').innerHTML,/▶ 视频/);
+ app.get('#i-name').value='高花费';app.get('#i-name').dispatch('input');
+ app.click('#save-item');
+ app.click('#modal-close');
+ // Verify video appears in 全部 & 手机合影, opens playable video detail & lightbox, and saves to gallery
+ app.click('[data-album-category=phone]');
+ assert.equal(app.document.querySelectorAll('[data-album-photo]').length,1);
+ app.click('[data-album-photo="0"]');
+ assert.match(app.get('#modal-body').innerHTML,/<video id="album-preview-video"[^>]+controls/);
+ app.click('#album-save-photo');
+ assert.equal(app.savedPhotos.at(-1),'https://idol.local/photos/'+vHash+'.mp4');
+ app.click('#album-fullscreen');
+ assert.equal(app.get('#photo-lightbox').classList.contains('hidden'),false);
+ assert.match(app.get('#photo-lightbox').innerHTML,/<video id="lightbox-video"[^>]+controls/);
+ app.click('#lightbox-close');
+ assert.equal(app.get('#photo-lightbox').classList.contains('hidden'),true);
+ app.click('#modal-close');
 });

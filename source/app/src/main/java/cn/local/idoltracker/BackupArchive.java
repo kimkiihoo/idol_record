@@ -14,7 +14,9 @@ final class BackupArchive {
     static final long MAX_BACKUP_BYTES = 10L * 1024 * 1024 * 1024;
     static final String PHOTO_ORIGIN = "https://idol.local/photos/";
     private static final int MAX_METADATA_BYTES = 50 * 1024 * 1024;
-    private static final String PHOTO_NAME = "[0-9a-f]{64}\\.(?:jpg|png|webp)";
+    static final long MAX_VIDEO_BYTES = 512L * 1024 * 1024;
+    private static final String VIDEO_NAME = "[0-9a-f]{64}\\.(?:mp4|webm|mov|mkv|3gp|m4v)";
+    private static final String PHOTO_NAME = "[0-9a-f]{64}\\.(?:jpg|png|webp|mp4|webm|mov|mkv|3gp|m4v)";
     private final File photos;
     private final File staging;
     BackupArchive(File files) throws IOException {
@@ -27,6 +29,8 @@ final class BackupArchive {
         return total+added;
     }
     static boolean isPhotoUrl(String url){return url!=null&&url.startsWith(PHOTO_ORIGIN)&&url.substring(PHOTO_ORIGIN.length()).matches(PHOTO_NAME);}
+    static boolean isVideoUrl(String url){return url!=null&&url.startsWith(PHOTO_ORIGIN)&&url.substring(PHOTO_ORIGIN.length()).matches(VIDEO_NAME);}
+    File resolveMediaFile(String url) throws IOException { return photoFile(url); }
     private File photoFile(String url) throws IOException {
         if(!isPhotoUrl(url))throw new IOException("照片地址无效");
         String name=url.substring(PHOTO_ORIGIN.length());File file=new File(photos,name);
@@ -37,9 +41,61 @@ final class BackupArchive {
         byte[] hash=MessageDigest.getInstance("SHA-256").digest(bytes);StringBuilder value=new StringBuilder();
         for(byte b:hash)value.append(String.format(Locale.US,"%02x",b&255));return value.toString();
     }
+    private static String normalizeVideoExt(String ext) {
+        if (ext == null) return "mp4";
+        String lower = ext.trim().toLowerCase(Locale.US);
+        if (lower.startsWith(".")) lower = lower.substring(1);
+        if ("webm".equals(lower) || "mov".equals(lower) || "mkv".equals(lower) || "3gp".equals(lower) || "m4v".equals(lower) || "mp4".equals(lower)) return lower;
+        if ("quicktime".equals(lower)) return "mov";
+        if ("x-matroska".equals(lower)) return "mkv";
+        if ("3gpp".equals(lower)) return "3gp";
+        return "mp4";
+    }
+    String saveVideo(InputStream source, String extension, File tempDir) throws Exception {
+        if (source == null) throw new IOException("无法读取所选视频");
+        String safeExt = normalizeVideoExt(extension);
+        File temp = File.createTempFile("video-", ".tmp", photos);
+        MessageDigest hash = MessageDigest.getInstance("SHA-256");
+        long total = 0;
+        try (InputStream in = source) {
+            try (FileOutputStream out = new FileOutputStream(temp)) {
+                byte[] buffer = new byte[65536];
+                int count;
+                while ((count = in.read(buffer)) != -1) {
+                    total += count;
+                    if (total > MAX_VIDEO_BYTES) throw new IOException("单个视频不能超过 512 MB");
+                    hash.update(buffer, 0, count);
+                    out.write(buffer, 0, count);
+                }
+                out.flush();
+            }
+            if (total == 0) throw new IOException("视频文件为空");
+            StringBuilder value = new StringBuilder();
+            for (byte b : hash.digest()) value.append(String.format(Locale.US, "%02x", b & 255));
+            String name = value.toString() + "." + safeExt;
+            File target = new File(photos, name);
+            if (!target.isFile()) {
+                if (!temp.renameTo(target)) throw new IOException("无法保存视频文件");
+            } else {
+                temp.delete();
+            }
+            return PHOTO_ORIGIN + name;
+        } catch (Exception error) {
+            temp.delete();
+            throw error;
+        }
+    }
     String savePhoto(String data) throws Exception {
-        if(isPhotoUrl(data)){if(!photoFile(data).isFile())throw new IOException("备份缺少照片文件");return data;}
-        if(data==null||data.length()>700000||!data.matches("data:image/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}"))throw new IOException("照片数据无效");
+        if(isPhotoUrl(data)){if(!photoFile(data).isFile())throw new IOException("备份缺少照片或视频文件");return data;}
+        if(data==null)throw new IOException("媒体数据无效");
+        boolean isInlineVideo = data.matches("data:video/(?:mp4|webm|quicktime|x-matroska|3gpp);base64,[A-Za-z0-9+/]+={0,2}");
+        if(isInlineVideo){
+            if(data.length()>15000000)throw new IOException("内联视频数据过大");
+            String sub=data.substring("data:video/".length(),data.indexOf(';'));
+            byte[] bytes=Base64.decode(data.substring(data.indexOf(',')+1),Base64.DEFAULT);
+            return saveVideo(new java.io.ByteArrayInputStream(bytes), sub, photos);
+        }
+        if(data.length()>700000||!data.matches("data:image/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}"))throw new IOException("照片数据无效");
         String extension=data.startsWith("data:image/png;")?"png":data.startsWith("data:image/webp;")?"webp":"jpg";
         byte[] bytes=Base64.decode(data.substring(data.indexOf(',')+1),Base64.DEFAULT);String name=digest(bytes)+"."+extension;
         File file=new File(photos,name);
@@ -118,10 +174,11 @@ final class BackupArchive {
                     while(entries.hasMoreElements()){ZipEntry entry=entries.nextElement();String name=entry.getName();if(!seen.add(name)||!(name.equals("state.json")||name.matches("photos/"+PHOTO_NAME)))throw new IOException("备份包含无效或重复文件");}
                     ArrayList<File> created=new ArrayList<>();
                     try{
-                        for(String url:refs){String name=url.substring(PHOTO_ORIGIN.length());ZipEntry entry=zip.getEntry("photos/"+name);if(entry==null)throw new IOException("备份缺少照片："+name);
-                            if(entry.getSize()>500000)throw new IOException("备份照片过大");
+                        for(String url:refs){String name=url.substring(PHOTO_ORIGIN.length());ZipEntry entry=zip.getEntry("photos/"+name);if(entry==null)throw new IOException("备份缺少媒体文件："+name);
+                            long entryLimit=isVideoUrl(url)?MAX_VIDEO_BYTES:500000L;
+                            if(entry.getSize()>entryLimit)throw new IOException(isVideoUrl(url)?"备份视频过大":"备份照片过大");
                             File temp=File.createTempFile("photo-", ".tmp",staging);created.add(temp);MessageDigest hash=MessageDigest.getInstance("SHA-256");long imageBytes=0;
-                            try(InputStream photo=zip.getInputStream(entry);OutputStream out=new FileOutputStream(temp)){byte[] buffer=new byte[65536];int count;while((count=photo.read(buffer))!=-1){total=checkedTotal(total,count);imageBytes+=count;if(imageBytes>500000)throw new IOException("备份照片过大");hash.update(buffer,0,count);out.write(buffer,0,count);}}
+                            try(InputStream photo=zip.getInputStream(entry);OutputStream out=new FileOutputStream(temp)){byte[] buffer=new byte[65536];int count;while((count=photo.read(buffer))!=-1){total=checkedTotal(total,count);imageBytes+=count;if(imageBytes>entryLimit)throw new IOException(isVideoUrl(url)?"备份视频过大":"备份照片过大");hash.update(buffer,0,count);out.write(buffer,0,count);}}
                             StringBuilder digest=new StringBuilder();for(byte b:hash.digest())digest.append(String.format(Locale.US,"%02x",b&255));if(!name.startsWith(digest.toString()+"."))throw new IOException("照片校验失败");
                             File target=new File(staging,name);if(target.isFile()||new File(photos,name).isFile())temp.delete();else if(!temp.renameTo(target))throw new IOException("无法暂存备份照片");else{created.remove(temp);created.add(target);}
                         }

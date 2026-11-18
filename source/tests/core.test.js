@@ -18,7 +18,8 @@ test('money uses exact integer cents and rejects invalid values', () => {
 
 test('legacy import preserves unknown fields, old types, IDs, totals and settings', () => {
   const original = event({ custom: { nested: '保留' }, interactions: [{ type: 'group', group_name: '团体', quantity: 2, price_per_ticket: 7.25, image: 'photo.jpg', custom: true }] });
-  const result = Core.parseBackup('\uFEFF' + JSON.stringify([original]), { monthly_budget: 123.45, other: true });
+  assert.throws(() => Core.parseBackup('\uFEFF' + JSON.stringify([original])), /桌面/);
+  const result = Core.parseBackup('\uFEFF' + JSON.stringify({ format: Core.FORMAT, version: 7, app_version: '1.2.0', records: [original], config: { monthly_budget: 123.45, other: true } }));
   assert.equal(result.records[0].id, 'event-1');
   assert.equal(result.records[0].interactions[0].type, 'group');
   assert.equal(result.records[0].interactions[0].tickets, 2);
@@ -168,7 +169,8 @@ test('legacy activity data matches decimal-reference totals without mutating sou
       interactions: [{ type: 'group', group_name: '示例团体', total_cost: '19.99', tickets: 1 }] })
   ];
   const before = Buffer.from(JSON.stringify(raw));
-  const result = Core.parseBackup(before.toString('utf8'));
+  assert.throws(() => Core.parseBackup(before.toString('utf8')), /桌面/);
+  const result = Core.parseBackup(JSON.stringify({ format: Core.FORMAT, version: 7, app_version: '1.2.1', records: raw }));
   const refCents = value => {
     const [whole, fraction = ''] = String(value || 0).split('.');
     return BigInt(whole) * 100n + BigInt(fraction.padEnd(2, '0'));
@@ -245,9 +247,10 @@ test('schema 1 migration drops images and preserves all non-image records, money
     assets: { images: { 'legacy.jpg': 'data:image/jpeg;base64,AAAA' }, custom_asset: { keep: true } }
   };
   const before = JSON.stringify(source);
-  const migrated = Core.parseBackup(before);
+  assert.throws(() => Core.parseBackup(before), /v1\.2\.0/);
+  const migrated = Core.parseBackup(before, { allowLegacy: true });
   assert.equal(migrated.version, 7);
-  assert.equal(migrated.app_version, '1.2.3');
+  assert.equal(migrated.app_version, '1.3.0');
   const expectedRecords = JSON.parse(JSON.stringify(source.records));
   delete expectedRecords[0].interactions[0].image;
   expectedRecords[0].ticket_quantity=1;expectedRecords[0].ticket_type='付费';expectedRecords[0].ticket_is_free=false;expectedRecords[0].member_roles=[];expectedRecords[0].interactions[0].participant_groups=[];
@@ -264,7 +267,7 @@ test('schema 1 migration drops images and preserves all non-image records, money
 
 test('new install state is blank, contains no private seed, and returns independent objects', () => {
   const empty = Core.createEmptyState();
-  assert.deepEqual(empty, { format: 'idol-tracker-backup', version: 7, app_version: '1.2.3', records: [], members: [], config: { monthly_budget: 0, backup_reminder_days: 0 }, assets: { images: {} } });
+  assert.deepEqual(empty, { format: 'idol-tracker-backup', version: 7, app_version: '1.3.0', records: [], members: [], config: { monthly_budget: 0, backup_reminder_days: 0 }, assets: { images: {} } });
   assert.deepEqual(Core.validateState(empty), empty);
   empty.records.push(event()); empty.config.monthly_budget = 50; empty.assets.images['private.jpg'] = 'data:image/jpeg;base64,AAAA';
   assert.deepEqual(Core.createEmptyState().records, []);
@@ -340,11 +343,12 @@ test('1.1.0 schema 2 data drops images without changing other fields and remains
   previous.records[0].interactions[0].image = 'photo.jpg';
   previous.assets.images['photo.jpg'] = 'data:image/jpeg;base64,AAAA';
   const source = JSON.stringify(previous), expected = JSON.parse(JSON.stringify(previous));
-  expected.app_version = '1.2.3';
+  expected.app_version = '1.3.0';
   expected.version = 7;
   delete expected.records[0].interactions[0].image;
   expected.assets.images = {};
-  const migrated = Core.parseBackup(source);
+  assert.throws(() => Core.parseBackup(source), /v1\.2\.0/);
+  const migrated = Core.parseBackup(source, { allowLegacy: true });
   assert.equal(migrated.version, 7);
   assert.deepEqual(migrated, expected);
   assert.deepEqual(Core.validateState(migrated), migrated);
@@ -357,7 +361,7 @@ test('image reference removal is recursive, handles legacy flat attachments, and
   const imageFields = Object.fromEntries(referenceFields.map(key => [key, key.endsWith('s') ? ['private.jpg'] : 'private.jpg']));
   const item = { id: 'legacy-item', type: 'merch', item_name: '周边', price: 12.34, quantity: 2, total_cost: 24.68, ...imageFields, custom: { ...imageFields, keep: ['plain', { text: '原备注' }], inline: 'data:image/jpeg;base64,AAAA', mixed: ['plain', 'data:image/png;base64,BBBB', 4] } };
   const source = { version: 1, app_version: '1.0.0', records: [event({ ...imageFields, event_type: 'performance', ticket_fee: 8.8, interactions: [item] })], config: { monthly_budget: 2000, keep: true }, assets: { 'private.jpg': 'data:image/jpeg;base64,AAAA', 'document.txt': 'plain attachment', metadata: { keep: true } }, custom: { keep: 'retained', ...imageFields } };
-  const before = JSON.stringify(source), migrated = Core.parseBackup(before);
+  const before = JSON.stringify(source), migrated = Core.validateState(source);
   const record = migrated.records[0], migratedItem = record.interactions[0];
   for (const key of referenceFields) {
     assert.equal(Object.hasOwn(record, key), false);
@@ -374,7 +378,8 @@ test('image reference removal is recursive, handles legacy flat attachments, and
   assert.deepEqual(Core.parseBackup(JSON.stringify(migrated)), migrated);
   assert.ok(!JSON.stringify(migrated).includes('data:image/'));
   assert.equal(JSON.stringify(source), before);
-  const rawList = Core.parseBackup(JSON.stringify(source.records), source.config);
+  assert.throws(() => Core.parseBackup(JSON.stringify(source.records)), /桌面/);
+  const rawList = Core.parseBackup(JSON.stringify({ format: Core.FORMAT, version: 7, app_version: '1.2.0', records: source.records, config: source.config }));
   assert.deepEqual(rawList.records, migrated.records);
   const otherImages = JSON.parse(before);
   otherImages.records[0].interactions[0].image = 'different.jpg';
@@ -662,7 +667,7 @@ test('statistics omits empty activity types and months but includes free recorde
 test('v1.2 migration assigns stable identities and fills missing historical groups from the first profile group',()=>{
  const original={version:5,app_version:'1.1.5',members:[{name:'甲',groups:['团A','团B']},{name:'乙',groups:['团C']}],config:{monthly_budget:999},records:[event({member_roles:[{member:'乙',group:'团C'}],interactions:[{id:'missing',member:'甲',tickets:2,total_cost:80},{id:'explicit',member:'甲',affiliated_group:'团B',tickets:1,total_cost:60},{id:'shared',cheki_type:'multi',members:['甲','乙'],tickets:1,total_cost:90}]})]};
  const migrated=Core.validateState(original),e=migrated.records[0],id=migrated.members[0].id;
- assert.equal(migrated.version,7);assert.equal(migrated.app_version,'1.2.3');assert.ok(id);
+ assert.equal(migrated.version,7);assert.equal(migrated.app_version,'1.3.0');assert.ok(id);
  assert.equal(e.interactions[0].member_id,id);assert.equal(e.interactions[0].participant_groups[0].group,'团A');assert.equal(e.interactions[1].participant_groups[0].group,'团B');assert.deepEqual(e.interactions[2].participant_groups.map(role=>role.group),['团A','团C']);
  assert.equal(Core.stats(migrated.records).total,23000);assert.equal(Core.stats(migrated.records).ticketCount,4);
  assert.deepEqual(Core.validateState(migrated),migrated);assert.equal(original.records[0].interactions[0].member_id,undefined);
@@ -815,4 +820,131 @@ test('upgrading a group phone photo stamped with legacy unknown member cleans sy
  assert.equal(migrated.records[0].interactions[0].participant_groups.length,0);
  assert.equal(Core.stats(migrated.records).phoneCount,1);
  assert.equal(Core.stats(migrated.records).ticketCount,0);
+});
+
+test('v1.2.4 core: first_met, per-month budgetForMonth, entity avatars/notes, renameGroup, and batch organizer assignments',()=>{
+ const avatarImg='data:image/jpeg;base64,AAAA';
+ let data=state([
+  event({id:'e1',organizer:'旧社',organizers:['旧社'],performing_groups:['旧团'],member_roles:[{member:'甲',group:'旧团'}],interactions:[{member:'甲',tickets:1,total_cost:50,affiliated_group:'旧团'},{type:'group',group_name:'旧团',tickets:1,total_cost:40}]}),
+  event({id:'e2',organizer:'其它社',organizers:['其它社'],performing_groups:['B团']})
+ ],{
+  members:[{id:'m1',name:'甲',groups:['旧团'],first_met:'2024-05-01'}],
+  config:{
+   monthly_budget:1000,
+   monthly_budgets:{'2026-11':2500,'2026-12':0},
+   price_presets:[{id:'p1',name:'团体切',scope:'group',target:'旧团',format:'cheki',price:50}]
+  }
+ });
+ assert.equal(Core.budgetForMonth(data.config,'2026-10'),100000);
+ assert.equal(Core.budgetForMonth(data.config,'2026-11'),250000);
+ assert.equal(Core.budgetForMonth(data.config,'2026-12'),0);
+ assert.throws(()=>state([],{config:{monthly_budgets:{'2026-13':100}}}));
+ assert.equal(data.members[0].first_met,'2024-05-01');
+ assert.throws(()=>state([],{members:[{name:'甲',first_met:'2026-02-30'}]}));
+ // Save organizer and group profiles with avatars (preserved through validateState despite omitImages)
+ let resOrg=Core.saveOrganizerProfile(data,'旧社',{name:'旧社',avatar:avatarImg,note:'事务所备注'});
+ data=resOrg.state;
+ let resGrp=Core.saveGroupProfile(data,'旧团',{name:'旧团',avatar:avatarImg,note:'团体备注',organizers:['旧社']});
+ data=resGrp.state;
+ assert.equal(Core.organizerProfile(data,'旧社').avatar,avatarImg);
+ assert.equal(Core.groupProfile(data,'旧团').avatar,avatarImg);
+ assert.deepEqual(Core.groupProfile(data,'旧团').organizers,['旧社']);
+ // Rename group across members, records, participant_groups, price_presets, and group_profiles
+ const grpRenamed=Core.renameGroup(data,'旧团','新团');
+ data=grpRenamed.state;
+ assert.equal(data.members[0].groups[0],'新团');
+ assert.deepEqual(data.records[0].performing_groups,['新团']);
+ assert.equal(data.records[0].interactions[0].affiliated_group,'新团');
+ assert.equal(data.records[0].interactions[0].participant_groups[0].group,'新团');
+ assert.equal(data.records[0].interactions[1].group_name,'新团');
+ assert.equal(data.config.price_presets[0].target,'新团');
+ assert.equal(Core.groupProfile(data,'新团').avatar,avatarImg);
+ assert.deepEqual(Core.groupProfile(data,'新团').organizers,['旧社']);
+ // Rename organizer also syncs organizer_profiles AND group_profiles[].organizers
+ data=Core.renameOrganizer(data,'旧社','新社').state;
+ assert.equal(Core.organizerProfile(data,'新社').avatar,avatarImg);
+ assert.deepEqual(Core.groupProfile(data,'新团').organizers,['新社']);
+ // Batch assign events and groups cleanly without clobbering other co-organizers
+ data=Core.setOrganizerEvents(data,'新社',['e1','e2']).state;
+ assert.deepEqual(Core.eventOrganizers(data.records.find(r=>r.id==='e2')).sort(),['其它社','新社'].sort());
+ data=Core.setOrganizerGroups(data,'其它社',['新团','B团']).state;
+ assert.deepEqual(Core.groupProfile(data,'新团').organizers.sort(),['新社','其它社'].sort());
+ assert.deepEqual(Core.groupProfile(data,'B团').organizers,['其它社']);
+});
+
+test('v1.2.5 core: merch multi-entity links/renames/merges, online purchase footprint exclusion, and legacy v1.2.0..1.2.4 backup compat',()=>{
+ let data=state([
+  event({id:'e-merch',date:'2026-10-01',event_type:'merch_only',city:'-',venue:'线上购买',interactions:[
+   {type:'merch',item_name:'生写Set',quantity:2,price:40,total_cost:80,merch_members:['甲','乙'],affiliated_groups:['星光团'],merch_organizers:['旧社']},
+   {type:'merch',item_name:'老版周边',quantity:1,price:30,total_cost:30}
+  ]})
+ ]);
+ data.members=[{name:'甲',groups:['星光团']},{name:'乙',groups:['星光团']},{name:'主甲',groups:['新团']}];
+ data=Core.validateState(data);
+ const merchItem=data.records[0].interactions[0];
+ assert.equal(merchItem.merch_member_ids.length,2);
+ // Merch must NOT inflate member cheki counts
+ assert.equal(Core.memberSummary(data,'甲').count,0);
+ // '线上购买' is excluded from physical footprints
+ assert.equal(Core.isPhysicalLocation('线上购买'),false);
+ assert.equal(Core.stats(data.records).venues.length,0);
+ assert.equal(Core.stats(data.records).merchCount,3);
+ assert.equal(Core.stats(data.records).merch,11000);
+ // Organizer & Member filters include multi-target merch
+ assert.ok(Core.organizerCatalog(data).includes('旧社'));
+ assert.equal(Core.filterRecords(data.records,{state:data,member:Core.resolveMember(data,'甲').id}).length,1);
+ assert.equal(Core.filterRecords(data.records,{state:data,organizer:'旧社'}).length,1);
+ // renameOrganizer / renameMember / mergeMember synchronize merch fields
+ data=Core.renameOrganizer(data,'旧社','新社').state;
+ assert.deepEqual(data.records[0].interactions[0].merch_organizers,['新社']);
+ data=Core.renameMember(data,Core.resolveMember(data,'甲').id,'改名甲');
+ assert.equal(data.records[0].interactions[0].merch_members[0],'改名甲');
+ data=Core.mergeMember(data,Core.resolveMember(data,'改名甲').id,Core.resolveMember(data,'主甲').id);
+ assert.equal(data.records[0].interactions[0].merch_members[0],'主甲');
+ // Backward compatibility with v1.2.0..1.2.4 backups (including legacy is_theme & phone_photo)
+ const v124=JSON.stringify({format:'idol-tracker-backup',version:7,app_version:'1.2.4',records:[event({id:'old-124',event_type:'phone_photo',interactions:[{type:'cheki',member:'乙',benefit_format:'theme',is_theme:true,tickets:1,price_per_ticket:50,total_cost:50}]})],members:[],config:{monthly_budget:0,backup_reminder_days:0}});
+ const restored=Core.parseBackup(v124);
+ assert.equal(restored.app_version,'1.3.0');
+ assert.equal(restored.records[0].interactions[0].is_theme,true);
+});
+
+test('v1.3.0 core: entitySpendingSummary (members/groups/organizers sorted descending), video attachment validation, and v1.2.5 migration',()=>{
+ const aHash='a'.repeat(64),bHash='b'.repeat(64);
+ let data=state([
+  event({id:'e1',date:'2026-11-05',event_type:'performance',organizers:['幻影社','星尘社'],performing_groups:['团A','团B'],ticket_fee:100,drink_fee:20,interactions:[
+   {type:'cheki',cheki_type:'individual',member:'甲',tickets:2,price_per_ticket:80,total_cost:160,participant_groups:[{member:'甲',group:'团A'}]},
+   {type:'cheki',cheki_type:'multi',members:['甲','乙'],tickets:1,price_per_ticket:10.01,total_cost:10.01,participant_groups:[{member:'甲',group:'团A'},{member:'乙',group:'团B'}]},
+   {type:'cheki',cheki_type:'group',group_name:'团B',tickets:1,price_per_ticket:200,total_cost:200},
+   {type:'phone',cheki_type:'individual',member:'乙',tickets:1,price_per_ticket:0,total_cost:0,attachments:[
+    {id:'v1',data:'https://idol.local/photos/'+aHash+'.mp4',media_type:'video',caption:'合影视频'},
+    {id:'v2',data:'https://idol.local/photos/'+bHash+'.mov',caption:'MOV格式'}
+   ]}
+  ]}),
+  event({id:'e2',date:'2026-11-08',event_type:'merch_only',venue:'线上购买',interactions:[
+   {type:'merch',item_name:'公式照',quantity:2,price:50,total_cost:100,merch_members:['乙'],affiliated_groups:['团B'],merch_organizers:['周边社']}
+  ]})
+ ]);
+ data.members=[{name:'甲',groups:['团A']},{name:'乙',groups:['团B']}];
+ data=Core.validateState(data);
+ const summary=Core.entitySpendingSummary(data,data.records);
+ assert.deepEqual(summary.members.map(r=>[r.name,r.cost]),[['甲',16501],['乙',10500]]);
+ assert.equal(summary.members[0].chekiCount,3);
+ assert.equal(summary.members[1].phoneCount,1);
+ assert.equal(summary.members[1].merchCount,2);
+ assert.deepEqual(summary.groups.map(r=>[r.name,r.cost]),[['团B',30500],['团A',16501]]);
+ assert.deepEqual(summary.organizers.map(r=>[r.name,r.cost]),[['幻影社',24501],['星尘社',24500],['周边社',10000]]);
+ const vids=Core.parseBackup(JSON.stringify({
+  ...data,
+  app_version:'1.2.5',
+  records:[event({id:'v-test',interactions:[{type:'phone',member:'甲',tickets:1,total_cost:0,attachments:[
+   {id:'m1',data:'https://idol.local/photos/'+aHash+'.webm'},
+   {id:'m2',data:'https://idol.local/photos/'+aHash+'.mkv'},
+   {id:'m3',data:'https://idol.local/photos/'+aHash+'.3gp'},
+   {id:'m4',data:'https://idol.local/photos/'+aHash+'.m4v'},
+   {id:'m5',data:'data:video/mp4;base64,AAAA',media_type:'video'}
+  ]}]})]
+ }));
+ assert.equal(vids.app_version,'1.3.0');
+ assert.equal(vids.records[0].interactions[0].attachments.length,5);
+ assert.throws(()=>Core.validateState({...data,records:[event({id:'bad-v',interactions:[{type:'phone',member:'甲',tickets:1,total_cost:0,attachments:[{id:'x',data:'https://idol.local/photos/'+aHash+'.avi'}]}]})]}),/媒体格式/);
 });

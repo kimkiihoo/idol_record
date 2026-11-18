@@ -7,7 +7,7 @@
   'use strict';
   const FORMAT = 'idol-tracker-backup';
   const SCHEMA_VERSION = 7;
-  const APP_VERSION = '1.2.3';
+  const APP_VERSION = '1.3.0';
   const MAX_MONEY = 99999999999999;
   const IMAGE_FIELDS = new Set(['image', 'image_name', 'photo', 'photo_name', 'images', 'photos', 'image_files', 'image_data', 'photo_data', 'image_url', 'photo_url', 'image_path', 'photo_path']);
   const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
@@ -22,7 +22,7 @@
     if (plain(value)) {
       const out = {};
       for (const key of Object.keys(value)) {
-        if (omitImages && (depth === 0 && key === 'members' || key === 'attachments')) { out[key] = clone(value[key], depth + 1, false); continue; }
+        if (omitImages && (depth === 0 && key === 'members' || key === 'attachments' || key === 'group_profiles' || key === 'organizer_profiles')) { out[key] = clone(value[key], depth + 1, false); continue; }
         if (omitImages && (IMAGE_FIELDS.has(key.toLowerCase()) || imageData(value[key]))) continue;
         if (['__proto__', 'constructor', 'prototype'].includes(key)) fail('备份包含不安全的字段名称');
         out[key] = clone(value[key], depth + 1, omitImages);
@@ -104,6 +104,13 @@
     if (kind(item) === 'multi') return participants(item).join(' / ');
     return String(item.member || item.group_name || item.item_name || '未命名');
   }
+  function validateAvatar(value, label) {
+    const avatar = value == null ? '' : value;
+    if (typeof avatar !== 'string' || avatar.length > 250000 || (avatar && !/^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(avatar))) {
+      fail((label || '头像') + '格式无效或超过大小限制');
+    }
+    return avatar;
+  }
   function validateMembers(input) {
     if (input == null) return [];
     if (!Array.isArray(input)) fail('成员档案必须为列表');
@@ -111,7 +118,7 @@
     return input.map(profile => {
       if (!plain(profile) || typeof profile.name !== 'string' || !profile.name.trim()) fail('请填写成员姓名');
       const clean = clone(profile, 1, true);
-      clean.avatar = profile.avatar || '';
+      clean.avatar = validateAvatar(profile.avatar, '成员头像');
       clean.name = clean.name.trim();
       clean.id = clean.id || legacyMemberId(clean.name);
       if (typeof clean.id !== 'string' || clean.id.length > 300 || !clean.id || clean.name.length > 300 || seen.has(clean.id)) fail('成员编号重复或姓名过长');
@@ -121,8 +128,11 @@
       clean.groups = names(clean.groups);
       clean.color = clean.color || '#FFFFFF';
       if (!/^#[0-9a-fA-F]{6}$/.test(clean.color)) fail('应援色须为六位颜色值');
-      clean.avatar = clean.avatar || '';
-      if (typeof clean.avatar !== 'string' || clean.avatar.length > 250000 || clean.avatar && !/^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(clean.avatar)) fail('头像格式无效或超过大小限制');
+      if (clean.first_met == null || clean.first_met === '') clean.first_met = '';
+      else {
+        if (typeof clean.first_met !== 'string') fail('初次见面日期格式错误');
+        clean.first_met = validDate(clean.first_met.trim());
+      }
       for (const key of ['weibo', 'douyin', 'xiaohongshu', 'note']) {
         if (clean[key] == null) clean[key] = '';
         if (typeof clean[key] !== 'string' || clean[key].length > 2000) fail('成员资料字段格式错误');
@@ -154,7 +164,7 @@
     for (const event of state.records) for (const item of event.interactions || []) {
       participants(item).forEach((name,index)=>{
         const id=participantIds(item)[index];
-        if (!catalog.has(id)) catalog.set(id, { id,name,aliases:[],archived:false,groups:[],color:'#FFFFFF',avatar:'',social_accounts:[],note:'' });
+        if (!catalog.has(id)) catalog.set(id, { id,name,aliases:[],archived:false,groups:[],color:'#FFFFFF',avatar:'',first_met:'',social_accounts:[],note:'' });
       });
     }
     const result=Array.from(catalog.values()).sort((a,b)=>a.name.localeCompare(b.name,'zh')||a.id.localeCompare(b.id));
@@ -176,7 +186,7 @@
     if(byLabel)return byLabel;
     const alias=catalog.filter(profile=>(profile.aliases||[]).includes(key));
     if(alias.length>1)fail('曾用名对应多位成员，请选择具体档案');
-    return alias[0]||{id:legacyMemberId(key),name:key,aliases:[],archived:false,groups:[],color:'#FFFFFF',avatar:'',social_accounts:[],note:''};
+    return alias[0]||{id:legacyMemberId(key),name:key,aliases:[],archived:false,groups:[],color:'#FFFFFF',avatar:'',first_met:'',social_accounts:[],note:''};
   }
   function roleMatches(role,key) { return role.member_id ? role.member_id===key : role.member===key; }
   function memberGroups(state,key) {
@@ -192,7 +202,7 @@
     return names(groups);
   }
   function groupCatalog(state) {
-    const groups = (state.members || []).flatMap(profile => profile.groups || []);
+    const groups = [...((state.config && state.config.group_profiles) || []).map(profile => profile.name), ...(state.members || []).flatMap(profile => profile.groups || [])];
     for (const event of state.records) {
       groups.push(...names(event.performing_groups), ...(event.member_roles || []).map(role => role.group));
       for (const item of event.interactions || []) {
@@ -244,10 +254,21 @@
         if(kind(item)==='individual'||(kind(item)==='phone'&&!isGroupItem(item))){
           const person=link(participants(item)[0],item.member_id);item.member=person.member;item.member_id=person.member_id;
         }else if(kind(item)==='multi'){
-          if(item.member_ids&&(!Array.isArray(item.member_ids)||item.member_ids.length!==item.members.length))fail('多人合影成员编号与名单不匹配');
+          if(item.member_ids&&(!Array.isArray(item.member_ids)||item.member_ids.length!==item.members.length))fail('多人特典成员编号与名单不匹配');
           const links=participants(item).map((name,index)=>link(name,item.member_ids&&item.member_ids[index]));
           item.members=links.map(role=>role.member);item.member_ids=links.map(role=>role.member_id);
-          if(new Set(item.member_ids).size!==item.member_ids.length)fail('多人合影不能重复同一成员');
+          if(new Set(item.member_ids).size!==item.member_ids.length)fail('多人特典不能重复同一成员');
+        }else if(kind(item)==='merch'){
+          if(item.merch_members!=null||item.merch_member_ids!=null){
+            const rawNames=names(item.merch_members);
+            const rawIds=Array.isArray(item.merch_member_ids)?item.merch_member_ids.map(String):[];
+            const entries=new Map();
+            const totalLen=Math.max(rawNames.length,rawIds.length);
+            for(let idx=0;idx<totalLen;idx++){const res=link(rawNames[idx]||rawIds[idx],rawIds[idx]);entries.set(res.member_id,res.member);}
+            item.merch_member_ids=Array.from(entries.keys());
+            item.merch_members=Array.from(entries.values());
+          }
+          if(item.merch_organizers!=null)item.merch_organizers=names(item.merch_organizers);
         }
         if(participantIds(item).some(id=>typeof id!=='string'||!id||id.length>300))fail('成员编号无效');
         item.participant_groups=(item.participant_groups||[]).map(role=>Object.assign({},role,link(role.member,role.member_id)));
@@ -278,12 +299,12 @@
   function isPhysicalLocation(value) {
     const text=String(value||'').normalize('NFKC').trim().replace(/\s+/g,'').toLowerCase();
     if(!text)return false;
-    if(/^(?:[-—–_/\\|·.]+|线上(?:[\/／、]邮寄)?|在线|网购|网络|邮寄|未统计|未记录|未填写|未指定(?:[\/／、]线上)?|未知(?:城市|场地)?|未知地点|未设置|未填|未标注|不详|待补充|未(?:指定|统计|记录|填写)(?:城市|场地|地点)|无|暂无|n\/?a|null|undefined)$/.test(text))return false;
+    if(/^(?:[-—–_/\\|·.]+|线上(?:购买|[\/／、]邮寄)?|在线|网购|网络|邮寄|未统计|未记录|未填写|未指定(?:[\/／、]线上)?|未知(?:城市|场地)?|未知地点|未设置|未填|未标注|不详|待补充|未(?:指定|统计|记录|填写)(?:城市|场地|地点)|无|暂无|n\/?a|null|undefined)$/.test(text))return false;
     const parts=text.split(/[\/\\、|]+/).filter(Boolean);
     return !(parts.length>1&&parts.every(part=>!isPhysicalLocation(part)));
   }
   function benefitTypes(state) {
-    return Object.assign({cheki:'普通切',signed:'签名切',unsigned:'无签切',online:'电切 / 网签',theme:'主题切',homework:'宿题/主题',other:'其它特典'},Object.fromEntries((state.config.benefit_types||[]).map(type=>['custom:'+type.id,type.label])));
+    return Object.assign({cheki:'普通切',signed:'签名切',unsigned:'无签切',online:'电切',theme:'主题切',homework:'宿题/主题',other:'其它特典'},Object.fromEntries((state.config.benefit_types||[]).map(type=>['custom:'+type.id,type.label])));
   }
   function isPhoto(item,state,event) {
     if(isPhone(item,event))return false;
@@ -294,6 +315,30 @@
     const format=form(item,event.event_type,event);
     const typeName=format==='phone'?'手机合影':(benefitTypes(state)[format]||item.benefit_label||'其它特典');
     return [typeName,item.photo_size?item.photo_size==='other'?'其它尺寸':item.photo_size+'寸':'',item.signature?item.signature==='signed'?'有签':'无签':'',item.is_theme&&format!=='theme'?'主题':''].filter(Boolean).join(' · ');
+  }
+  function validateEntityProfiles(input, withOrganizers, label) {
+    if (!Array.isArray(input) || input.length > 2000) fail(label + '列表格式错误');
+    const seen = new Set();
+    return input.map(item => {
+      if (!plain(item) || typeof item.name !== 'string') fail(label + '资料格式错误');
+      const name = item.name.trim();
+      if (!name || name.length > 300 || /[,，、;；\n]/.test(name) || seen.has(name)) fail(label + '名称无效或重复');
+      seen.add(name);
+      const avatar = validateAvatar(item.avatar, label + '头像');
+      const note = item.note == null ? '' : item.note;
+      if (typeof note !== 'string' || note.length > 2000) fail(label + '备注格式错误');
+      const clean = { name, avatar, note };
+      if (withOrganizers) {
+        const orgs = names(item.organizers);
+        if (orgs.some(o => o.length > 300)) fail('所属事务所名称过长');
+        clean.organizers = orgs;
+      }
+      return clean;
+    }).sort((a, b) => a.name.localeCompare(b.name, 'zh'));
+  }
+  function budgetForMonth(config, month) {
+    if (config && plain(config.monthly_budgets) && month && own(config.monthly_budgets, month)) return cents(config.monthly_budgets[month]);
+    return cents(config && config.monthly_budget != null ? config.monthly_budget : 0);
   }
   function validatePreferences(config) {
     if(config.benefit_types!=null){
@@ -313,10 +358,21 @@
     if(config.theme!=null&&!['system','light','dark'].includes(config.theme))fail('主题设置无效');
     if(config.font_scale!=null&&![1,1.15,1.3].includes(config.font_scale))fail('字号设置无效');
     if(config.backup_reminder_days!=null&&![0,7,30].includes(config.backup_reminder_days))fail('备份提醒间隔无效');
+    if(config.monthly_budgets!=null){
+      if(!plain(config.monthly_budgets)||Object.keys(config.monthly_budgets).length>1200)fail('指定月预算格式错误');
+      const normalized={};
+      for(const [month,value]of Object.entries(config.monthly_budgets)){
+        if(!/^\d{4}-(?:0[1-9]|1[0-2])$/.test(month)||Number(month.slice(0,4))<1)fail('预算月份格式须为 YYYY-MM');
+        normalized[month]=amount(cents(value));
+      }
+      config.monthly_budgets=normalized;
+    }
     if(config.organizers!=null){
       if(!Array.isArray(config.organizers)||config.organizers.length>1000)fail('事务所列表格式错误');
       config.organizers=names(config.organizers.map(name=>{if(typeof name!=='string'||!name.trim()||name.trim().length>300)fail('事务所名称无效');return name.trim();}));
     }
+    if(config.organizer_profiles!=null)config.organizer_profiles=validateEntityProfiles(config.organizer_profiles,false,'事务所');
+    if(config.group_profiles!=null)config.group_profiles=validateEntityProfiles(config.group_profiles,true,'团体');
   }
   function presetPrice(state,options) {
     return (state.config.price_presets||[]).filter(preset=>preset.format===options.format&&(!preset.size||preset.size===options.size)&&(!preset.signature||preset.signature===options.signature)&&(!preset.themed||options.themed)&&
@@ -333,6 +389,7 @@
       for(const item of event.interactions){
         if((kind(item)==='individual'||(kind(item)==='phone'&&!isGroupItem(item)))&&item.member_id===profile.id)item.member=name;
         if(kind(item)==='multi')item.members=item.members.map((member,index)=>item.member_ids[index]===profile.id?name:member);
+        if(kind(item)==='merch'&&Array.isArray(item.merch_member_ids))item.merch_members=(item.merch_members||[]).map((member,index)=>item.merch_member_ids[index]===profile.id?name:member);
         for(const role of item.participant_groups||[])if(role.member_id===profile.id)role.member=name;
       }
     }
@@ -354,11 +411,17 @@
           item.member_ids=Array.from(entries.keys());item.members=Array.from(entries.values());
           if(item.member_ids.length===1){item.cheki_type='individual';item.member_id=item.member_ids[0];item.member=item.members[0];delete item.member_ids;delete item.members;}
         }
+        if(kind(item)==='merch'&&Array.isArray(item.merch_member_ids)){
+          const mEntries=new Map();
+          item.merch_member_ids.forEach((id,index)=>{const key=id===sourceId?targetId:id;if(!mEntries.has(key))mEntries.set(key,key===targetId?target.name:(item.merch_members||[])[index]||target.name);});
+          item.merch_member_ids=Array.from(mEntries.keys());item.merch_members=Array.from(mEntries.values());
+        }
         item.participant_groups=roles(item.participant_groups);
       }
     }
     target.groups=names([...target.groups,...source.groups]);target.aliases=names([...target.aliases,...source.aliases,source.name]).filter(name=>name!==target.name);
     if(!target.avatar)target.avatar=source.avatar;
+    if(target.first_met&&source.first_met)target.first_met=target.first_met<=source.first_met?target.first_met:source.first_met;else target.first_met=target.first_met||source.first_met||'';
     target.social_accounts=Array.from(new Map([...(target.social_accounts||[]),...(source.social_accounts||[])].map(account=>[account.platform+'\u0000'+account.account,account])).values());
     if(target.social_accounts.length>32)fail('合并后社媒超过 32 条，请先整理重复或不需要的账号');
     if(source.note&&source.note!==target.note)target.note=target.note?target.note+'\n\n合并档案「'+source.name+'」的备注\n'+source.note:source.note;
@@ -419,30 +482,211 @@
   }
   function organizerCatalog(state) {
     const configured = Array.isArray(state.config && state.config.organizers) ? state.config.organizers : [];
-    const recorded = (state.records || []).flatMap(eventOrganizers);
-    return names([...configured, ...recorded]).sort((a, b) => a.localeCompare(b, 'zh'));
+    const profiled = ((state.config && state.config.organizer_profiles) || []).map(profile => profile.name);
+    const affiliated = ((state.config && state.config.group_profiles) || []).flatMap(profile => profile.organizers || []);
+    const recorded = (state.records || []).flatMap(e => [...eventOrganizers(e), ...(e.interactions || []).flatMap(it => names(it.merch_organizers))]);
+    return names([...configured, ...profiled, ...affiliated, ...recorded]).sort((a, b) => a.localeCompare(b, 'zh'));
+  }
+  function organizerProfile(state, name) {
+    const found = ((state.config && state.config.organizer_profiles) || []).find(profile => profile.name === name);
+    return found ? clone(found) : { name: String(name || ''), avatar: '', note: '' };
+  }
+  function groupProfile(state, name) {
+    const found = ((state.config && state.config.group_profiles) || []).find(profile => profile.name === name);
+    return found ? clone(found) : { name: String(name || ''), avatar: '', note: '', organizers: [] };
+  }
+  function validEntityName(name, label) {
+    const clean = String(name || '').trim();
+    if (!clean) fail('请填写' + label + '名称');
+    if (clean.length > 300) fail(label + '名称过长');
+    if (/[,，、;；\n]/.test(clean)) fail(label + '名称不能包含逗号或分号分隔符');
+    return clean;
+  }
+  function mergeProfileNote(targetNote, sourceNote) {
+    if (!sourceNote || sourceNote === targetNote) return targetNote || '';
+    return targetNote ? targetNote + '\n' + sourceNote : sourceNote;
+  }
+  function upsertEntityProfile(list, profile) {
+    const next = list.filter(item => item.name !== profile.name);
+    next.push(profile);
+    return next;
   }
   function renameOrganizer(state, oldName, newName) {
     state = validateState(state);
     const oldKey = String(oldName || '').trim();
-    const nextName = String(newName || '').trim();
-    if (!oldKey || !nextName) fail('请填写事务所名称');
-    if (nextName.length > 300) fail('事务所名称过长');
-    if (/[,，、;；\n]/.test(nextName)) fail('事务所名称不能包含逗号或分号分隔符');
+    const nextName = validEntityName(newName, '事务所');
+    if (!oldKey) fail('请填写事务所名称');
     if (oldKey === nextName) fail('新名称与原名称相同');
     let updated = 0;
     for (const event of state.records) {
+      let eventChanged = false;
       const current = eventOrganizers(event);
-      if (!current.includes(oldKey)) continue;
-      const replaced = names(current.map(name => (name === oldKey ? nextName : name)));
-      event.organizers = replaced;
-      event.organizer = replaced.join('，');
-      updated++;
+      if (current.includes(oldKey)) {
+        const replaced = names(current.map(name => (name === oldKey ? nextName : name)));
+        event.organizers = replaced;
+        event.organizer = replaced.join('，');
+        eventChanged = true;
+      }
+      for (const item of event.interactions || []) {
+        const mOrgs = names(item.merch_organizers);
+        if (mOrgs.includes(oldKey)) {
+          item.merch_organizers = names(mOrgs.map(name => (name === oldKey ? nextName : name)));
+          eventChanged = true;
+        }
+      }
+      if (eventChanged) updated++;
     }
     if (Array.isArray(state.config.organizers)) {
       state.config.organizers = names(state.config.organizers.map(name => (name === oldKey ? nextName : name)));
     }
+    const orgProfiles = state.config.organizer_profiles || [];
+    const oldProfile = orgProfiles.find(profile => profile.name === oldKey);
+    if (oldProfile) {
+      const targetProfile = orgProfiles.find(profile => profile.name === nextName) || { name: nextName, avatar: '', note: '' };
+      targetProfile.avatar = targetProfile.avatar || oldProfile.avatar || '';
+      targetProfile.note = mergeProfileNote(targetProfile.note, oldProfile.note);
+      state.config.organizer_profiles = upsertEntityProfile(orgProfiles.filter(profile => profile.name !== oldKey), targetProfile);
+    }
+    if (Array.isArray(state.config.group_profiles)) {
+      for (const group of state.config.group_profiles) {
+        if ((group.organizers || []).includes(oldKey)) {
+          group.organizers = names(group.organizers.map(org => (org === oldKey ? nextName : org)));
+        }
+      }
+    }
     return { state: validateState(state), updated };
+  }
+  function saveOrganizerProfile(state, originalName, updates) {
+    let working = validateState(state);
+    const nextName = validEntityName(updates.name, '事务所');
+    const oldKey = String(originalName || '').trim();
+    let updated = 0;
+    if (oldKey && oldKey !== nextName) {
+      const renamed = renameOrganizer(working, oldKey, nextName);
+      working = renamed.state;
+      updated = renamed.updated;
+    } else {
+      working.config.organizers = names([...(working.config.organizers || []), nextName]);
+    }
+    const existing = organizerProfile(working, nextName);
+    const nextProfile = {
+      name: nextName,
+      avatar: updates.avatar != null ? updates.avatar : existing.avatar,
+      note: updates.note != null ? String(updates.note) : existing.note,
+    };
+    working.config.organizer_profiles = upsertEntityProfile(working.config.organizer_profiles || [], nextProfile);
+    return { state: validateState(working), name: nextName, updated };
+  }
+  function renameGroup(state, oldName, newName) {
+    state = validateState(state);
+    const oldKey = String(oldName || '').trim();
+    const nextName = validEntityName(newName, '团体');
+    if (!oldKey) fail('请填写团体名称');
+    if (oldKey === nextName) fail('新名称与原名称相同');
+    let updated = 0;
+    for (const member of state.members) {
+      if ((member.groups || []).includes(oldKey)) {
+        member.groups = names(member.groups.map(group => (group === oldKey ? nextName : group)));
+        updated++;
+      }
+    }
+    for (const event of state.records) {
+      let eventChanged = false;
+      if (Array.isArray(event.performing_groups) && event.performing_groups.includes(oldKey)) {
+        event.performing_groups = names(event.performing_groups.map(group => (group === oldKey ? nextName : group)));
+        eventChanged = true;
+      }
+      for (const role of event.member_roles || []) {
+        if (role.group === oldKey) { role.group = nextName; eventChanged = true; }
+      }
+      for (const item of event.interactions || []) {
+        if (isGroupItem(item) && item.group_name === oldKey) { item.group_name = nextName; eventChanged = true; }
+        const aff = names(item.affiliated_groups || item.affiliated_group);
+        if (aff.includes(oldKey)) {
+          const nextAff = names(aff.map(group => (group === oldKey ? nextName : group)));
+          if (item.affiliated_groups != null) item.affiliated_groups = nextAff;
+          if (item.affiliated_group != null) item.affiliated_group = nextAff.join('，');
+          eventChanged = true;
+        }
+        for (const role of item.participant_groups || []) {
+          if (role.group === oldKey) { role.group = nextName; eventChanged = true; }
+        }
+      }
+      if (eventChanged) updated++;
+    }
+    for (const preset of state.config.price_presets || []) {
+      if (preset.scope === 'group' && preset.target === oldKey) preset.target = nextName;
+    }
+    const groupProfiles = state.config.group_profiles || [];
+    const oldProfile = groupProfiles.find(profile => profile.name === oldKey);
+    if (oldProfile) {
+      const targetProfile = groupProfiles.find(profile => profile.name === nextName) || { name: nextName, avatar: '', note: '', organizers: [] };
+      targetProfile.avatar = targetProfile.avatar || oldProfile.avatar || '';
+      targetProfile.organizers = names([...(targetProfile.organizers || []), ...(oldProfile.organizers || [])]);
+      targetProfile.note = mergeProfileNote(targetProfile.note, oldProfile.note);
+      state.config.group_profiles = upsertEntityProfile(groupProfiles.filter(profile => profile.name !== oldKey), targetProfile);
+    }
+    catalogCache.delete(state);
+    return { state: validateState(state), updated };
+  }
+  function saveGroupProfile(state, originalName, updates) {
+    let working = validateState(state);
+    const nextName = validEntityName(updates.name, '团体');
+    const oldKey = String(originalName || '').trim();
+    let updated = 0;
+    if (oldKey && oldKey !== nextName) {
+      const renamed = renameGroup(working, oldKey, nextName);
+      working = renamed.state;
+      updated = renamed.updated;
+    }
+    const existing = groupProfile(working, nextName);
+    const nextProfile = {
+      name: nextName,
+      avatar: updates.avatar != null ? updates.avatar : existing.avatar,
+      note: updates.note != null ? String(updates.note) : existing.note,
+      organizers: updates.organizers != null ? names(updates.organizers) : (existing.organizers || []),
+    };
+    working.config.group_profiles = upsertEntityProfile(working.config.group_profiles || [], nextProfile);
+    return { state: validateState(working), name: nextName, updated };
+  }
+  function setOrganizerEvents(state, organizerName, selectedIds) {
+    const cleanOrg = validEntityName(organizerName, '事务所');
+    const working = validateState(state);
+    const chosen = new Set(selectedIds || []);
+    let updated = 0;
+    for (const event of working.records) {
+      const current = eventOrganizers(event);
+      const hasOrg = current.includes(cleanOrg);
+      const wantOrg = chosen.has(event.id);
+      if (hasOrg === wantOrg) continue;
+      const nextOrgs = wantOrg ? names([...current, cleanOrg]) : current.filter(name => name !== cleanOrg);
+      event.organizers = nextOrgs;
+      event.organizer = nextOrgs.join('，');
+      updated++;
+    }
+    working.config.organizers = names([...(working.config.organizers || []), cleanOrg]);
+    return { state: validateState(working), updated };
+  }
+  function setOrganizerGroups(state, organizerName, selectedGroups) {
+    const cleanOrg = validEntityName(organizerName, '事务所');
+    const working = validateState(state);
+    const chosen = new Set(names(selectedGroups || []));
+    const allGroups = names([...groupCatalog(working), ...chosen]);
+    let profiles = working.config.group_profiles || [];
+    let updated = 0;
+    for (const groupName of allGroups) {
+      const existing = profiles.find(profile => profile.name === groupName) || { name: groupName, avatar: '', note: '', organizers: [] };
+      const currentOrgs = existing.organizers || [];
+      const hasOrg = currentOrgs.includes(cleanOrg);
+      const wantOrg = chosen.has(groupName);
+      if (hasOrg === wantOrg) continue;
+      existing.organizers = wantOrg ? names([...currentOrgs, cleanOrg]) : currentOrgs.filter(name => name !== cleanOrg);
+      profiles = upsertEntityProfile(profiles, existing);
+      updated++;
+    }
+    working.config.group_profiles = profiles;
+    working.config.organizers = names([...(working.config.organizers || []), cleanOrg]);
+    return { state: validateState(working), updated };
   }
   function normalizeRoles(input) {
     if (!Array.isArray(input)) fail('成员活动身份须为列表');
@@ -514,13 +758,18 @@
   }
   function validateAttachments(value) {
     if(value==null)return [];
-    if(!Array.isArray(value)||value.length>20)fail('每条记录最多保存 20 张照片');
+    if(!Array.isArray(value)||value.length>20)fail('每条记录最多保存 20 个照片或视频');
     const ids=new Set();
     return value.map(photo=>{
-      if(!plain(photo)||typeof photo.id!=='string'||!photo.id||photo.id.length>300||ids.has(photo.id)||typeof photo.data!=='string'||photo.data.length>700000||!(/^(?:data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}|https:\/\/idol\.local\/photos\/[0-9a-f]{64}\.(?:jpg|png|webp))$/.test(photo.data)))fail('照片格式无效或超过大小限制');
+      if(!plain(photo)||typeof photo.id!=='string'||!photo.id||photo.id.length>300||ids.has(photo.id)||typeof photo.data!=='string')fail('媒体格式无效或超过大小限制');
+      const isLocalMedia=/^https:\/\/idol\.local\/photos\/[0-9a-f]{64}\.(?:jpg|png|webp|mp4|webm|mov|mkv|3gp|m4v)$/.test(photo.data);
+      const isImageData=photo.data.length<=700000&&/^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(photo.data);
+      const isVideoData=photo.data.length<=15000000&&/^data:video\/(?:mp4|webm|quicktime|x-matroska|3gpp);base64,[A-Za-z0-9+/]+={0,2}$/.test(photo.data);
+      if(!isLocalMedia&&!isImageData&&!isVideoData)fail('媒体格式无效或超过大小限制');
+      if(photo.media_type!=null&&!['image','video'].includes(photo.media_type))fail('媒体类型无效');
       ids.add(photo.id);
       if(photo.caption!=null&&(typeof photo.caption!=='string'||photo.caption.length>500))fail('照片说明过长');
-      return {id:photo.id,data:photo.data,caption:photo.caption||''};
+      return Object.assign({id:photo.id,data:photo.data,caption:photo.caption||''},photo.media_type?{media_type:photo.media_type}:{});
     });
   }
   function normalizeRecords(records) {
@@ -561,7 +810,7 @@
         }
         if (kind(item) === 'multi') {
           item.members = Array.isArray(item.member_ids) ? item.members.map(String) : names(item.members);
-          if (item.members.length < 2) fail('多人合影至少选择两位不同成员');
+          if (item.members.length < 2) fail('多人特典至少选择两位不同成员');
         }
         if (kind(item) === 'phone' && item.cheki_type === 'group' && item.group_name && item.member === '未知成员') {
           delete item.member;
@@ -618,12 +867,27 @@
   function createEmptyState() {
     return { format: FORMAT, version: SCHEMA_VERSION, app_version: APP_VERSION, records: [], members: [], config: { monthly_budget: 0, backup_reminder_days: 0 }, assets: { images: {} } };
   }
-  function parseBackup(text, currentConfig, currentMembers) {
+  function isVersionAtLeast120(versionText) {
+    if (typeof versionText !== 'string') return false;
+    const match = /^(\d+)\.(\d+)(?:\.(\d+))?/.exec(versionText.trim());
+    if (!match) return false;
+    const major = Number(match[1]), minor = Number(match[2]);
+    return major > 1 || (major === 1 && minor >= 2);
+  }
+  function parseBackup(text, options) {
     if (typeof text !== 'string') fail('备份内容必须为文本');
     if (text.length > 50 * 1024 * 1024) fail('备份文件超过 50 MB 限制');
     let data;
     try { data = JSON.parse(text.replace(/^\uFEFF/, '')); } catch (_) { fail('备份不是有效的 JSON 文件'); }
-    if (Array.isArray(data)) data = { records: data, members: currentMembers || [], config: currentConfig || {} };
+    const allowLegacy = plain(options) && options.allowLegacy === true;
+    if (Array.isArray(data)) {
+      fail('已停止支持桌面记录列表，请导入 v1.2.0 及以上版本的手机完整备份');
+    }
+    if (!allowLegacy) {
+      if (!plain(data) || data.format !== FORMAT || data.version !== SCHEMA_VERSION || (data.app_version != null && !isVersionAtLeast120(data.app_version))) {
+        fail('仅支持导入 v1.2.0 及以上版本的手机完整备份');
+      }
+    }
     return validateState(data);
   }
   function stats(records) {
@@ -691,6 +955,78 @@
     out.cities = Array.from(cities.values()).filter(row=>isPhysicalLocation(row.name)).sort((a, b) => b.cost - a.cost || b.count - a.count || a.name.localeCompare(b.name, 'zh'));
     out.venues = Array.from(venues.values()).filter(row=>isPhysicalLocation(row.name)).sort((a, b) => b.cost - a.cost || b.count - a.count || a.name.localeCompare(b.name, 'zh'));
     return out;
+  }
+  function entitySpendingSummary(state, records) {
+    const membersMap = new Map(), groupsMap = new Map(), orgsMap = new Map();
+    const ensure = (map, id, name) => {
+      if (!map.has(id)) map.set(id, { id, name, cost: 0, count: 0, chekiCount: 0, phoneCount: 0, merchCount: 0, eventCount: 0 });
+      return map.get(id);
+    };
+    const splitAdd = (map, keys, totalCents, getName, updater) => {
+      if (!keys.length) return;
+      const n = keys.length;
+      keys.forEach((key, idx) => {
+        const share = Math.floor(totalCents / n) + (idx < totalCents % n ? 1 : 0);
+        const row = ensure(map, key, getName(key));
+        row.cost = safe(row.cost + share);
+        if (updater) updater(row, share, idx === 0);
+      });
+    };
+    for (const event of records || []) {
+      const evOrgs = eventOrganizers(event);
+      const seenEventOrgs = new Set();
+      let baseEventCost = safe(cents(event.ticket_fee == null ? 0 : event.ticket_fee) + cents(event.drink_fee == null ? 0 : event.drink_fee));
+      for (const item of event.interactions || []) {
+        const k = kind(item), total = itemTotal(item), qty = count(item), phone = isPhone(item, event);
+        if (k === 'merch') {
+          const mIds = Array.isArray(item.merch_member_ids) && item.merch_member_ids.length
+            ? item.merch_member_ids
+            : names(item.merch_members).map(n => resolveMember(state, n).id);
+          splitAdd(membersMap, mIds, total, id => memberLabel(resolveMember(state, id), state), r => { r.merchCount += qty; r.count += qty; });
+          const mGroups = names(item.affiliated_groups || item.affiliated_group);
+          splitAdd(groupsMap, mGroups, total, g => g, r => { r.merchCount += qty; r.count += qty; });
+          const mOrgs = names(item.merch_organizers);
+          if (mOrgs.length) {
+            splitAdd(orgsMap, mOrgs, total, o => o, r => { r.merchCount += qty; r.count += qty; });
+          } else {
+            baseEventCost = safe(baseEventCost + total);
+          }
+          continue;
+        }
+        baseEventCost = safe(baseEventCost + total);
+        if (isGroupItem(item)) {
+          const gName = String(item.group_name || '未知团体');
+          const gRow = ensure(groupsMap, gName, gName);
+          gRow.cost = safe(gRow.cost + total);
+          if (phone) gRow.phoneCount += qty; else gRow.chekiCount += qty;
+          gRow.count += qty;
+        } else {
+          const ids = participantIds(item);
+          ids.forEach((id, idx) => {
+            const share = Math.floor(total / ids.length) + (idx < total % ids.length ? 1 : 0);
+            const prof = resolveMember(state, id);
+            const mRow = ensure(membersMap, id, memberLabel(prof, state));
+            mRow.cost = safe(mRow.cost + share);
+            if (phone) mRow.phoneCount += qty; else mRow.chekiCount += qty;
+            mRow.count += qty;
+            const gList = identityGroups(item, state, event, id);
+            splitAdd(groupsMap, gList, share, g => g, gRow => {
+              if (phone) gRow.phoneCount += qty; else gRow.chekiCount += qty;
+              gRow.count += qty;
+            });
+          });
+        }
+      }
+      if (evOrgs.length) {
+        splitAdd(orgsMap, evOrgs, baseEventCost, o => o, r => {
+          if (!seenEventOrgs.has(r.id)) { r.eventCount++; r.count++; seenEventOrgs.add(r.id); }
+        });
+      }
+    }
+    const sortRows = map => Array.from(map.values())
+      .filter(r => r.cost > 0 || r.count > 0)
+      .sort((a, b) => b.cost - a.cost || b.count - a.count || a.name.localeCompare(b.name, 'zh'));
+    return { members: sortRows(membersMap), groups: sortRows(groupsMap), organizers: sortRows(orgsMap) };
   }
   function frequent(records, field, options) {
     options = options || {};
@@ -777,7 +1113,7 @@
       else fail('时间范围格式须为 YYYY、YYYY-MM 或 YYYY-Q1');
     }
     const matchedProfiles=options.state&&options.query?new Set(memberCatalog(options.state).filter(profile=>search(profile,options.query,options.pinyin)).map(profile=>profile.id)):null;
-    return records.filter(event => (!options.type || options.type === 'all' || (event.event_type || 'performance') === options.type) && (!options.venue || event.venue === options.venue) && (!options.organizer || eventOrganizers(event).includes(options.organizer)) && (!options.member || (event.interactions || []).some(item => participantIds(item).includes(options.member)||participants(item).includes(options.member))) && predicate(event) && (search(event, options.query, options.pinyin)||matchedProfiles&&(event.interactions||[]).some(item=>participantIds(item).some(id=>matchedProfiles.has(id))))).sort((a, b) => b.date.localeCompare(a.date));
+    return records.filter(event => (!options.type || options.type === 'all' || (event.event_type || 'performance') === options.type) && (!options.venue || event.venue === options.venue) && (!options.organizer || eventOrganizers(event).includes(options.organizer) || (event.interactions || []).some(it => names(it.merch_organizers).includes(options.organizer))) && (!options.member || (event.interactions || []).some(item => participantIds(item).includes(options.member)||participants(item).includes(options.member)||(item.merch_member_ids||[]).includes(options.member)||names(item.merch_members).includes(options.member))) && predicate(event) && (search(event, options.query, options.pinyin)||matchedProfiles&&(event.interactions||[]).some(item=>participantIds(item).some(id=>matchedProfiles.has(id))||(item.merch_member_ids||[]).some(id=>matchedProfiles.has(id))))).sort((a, b) => b.date.localeCompare(a.date));
   }
   // UTC getters are used solely for calendar arithmetic; input/output never pass
   // through local timezone parsing, so a device timezone cannot shift the day.
@@ -848,10 +1184,20 @@
     }
     // Keep current settings on merge, while preserving any previously unknown fields.
     if (Array.isArray(imported.config.organizers)) state.config.organizers = names([...(state.config.organizers || []), ...imported.config.organizers]);
+    if (Array.isArray(imported.config.organizer_profiles)) {
+      const existingOrgNames = new Set((state.config.organizer_profiles || []).map(p => p.name));
+      const addedOrgs = imported.config.organizer_profiles.filter(p => !existingOrgNames.has(p.name));
+      if (addedOrgs.length) state.config.organizer_profiles = [...(state.config.organizer_profiles || []), ...addedOrgs];
+    }
+    if (Array.isArray(imported.config.group_profiles)) {
+      const existingGroupNames = new Set((state.config.group_profiles || []).map(p => p.name));
+      const addedGroups = imported.config.group_profiles.filter(p => !existingGroupNames.has(p.name));
+      if (addedGroups.length) state.config.group_profiles = [...(state.config.group_profiles || []), ...addedGroups];
+    }
     for (const [key, value] of Object.entries(imported)) if (!own(state, key)) state[key] = value;
     for (const [key, value] of Object.entries(imported.config)) if (!own(state.config, key)) state.config[key] = value;
     for (const [key, value] of Object.entries(imported.assets)) if (!own(state.assets, key)) state.assets[key] = value;
     return { state: validateState(state), added, conflicts, skipped, membersAdded, memberConflicts };
   }
-  return { FORMAT, SCHEMA_VERSION, APP_VERSION, createEmptyState, admission, memberSummary, groupSummary, ticketSummary, calendarSummary, annualSummary, legacyMemberId, participantIds, resolveMember, memberLabel, memberGroups, renameMember, mergeMember, isPhysicalLocation, isGroupItem, isPhone, benefitTypes, benefitLabel, presetPrice, names, participants, itemName, memberCatalog, groupCatalog, organizerCatalog, renameOrganizer, memberMetrics, eventOrganizers, identityGroups, preferredIdentity, interactionGroups, interactionRows, cents, amount, money, quantity, validDate, kind, form, count, itemTotal, eventTotal, stats, parseBackup, validateState, mergeStates, search, filterRecords, periodRange, frequent, prices, clone };
+  return { FORMAT, SCHEMA_VERSION, APP_VERSION, createEmptyState, budgetForMonth, entitySpendingSummary, admission, memberSummary, groupSummary, ticketSummary, calendarSummary, annualSummary, legacyMemberId, participantIds, resolveMember, memberLabel, memberGroups, renameMember, mergeMember, isPhysicalLocation, isGroupItem, isPhone, benefitTypes, benefitLabel, presetPrice, names, participants, itemName, memberCatalog, groupCatalog, organizerCatalog, organizerProfile, groupProfile, saveOrganizerProfile, saveGroupProfile, renameOrganizer, renameGroup, setOrganizerEvents, setOrganizerGroups, memberMetrics, eventOrganizers, identityGroups, preferredIdentity, interactionGroups, interactionRows, cents, amount, money, quantity, validDate, kind, form, count, itemTotal, eventTotal, stats, parseBackup, validateState, mergeStates, search, filterRecords, periodRange, frequent, prices, clone };
 });
