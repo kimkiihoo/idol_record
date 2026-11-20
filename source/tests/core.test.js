@@ -250,7 +250,7 @@ test('schema 1 migration drops images and preserves all non-image records, money
   assert.throws(() => Core.parseBackup(before), /v1\.2\.0/);
   const migrated = Core.parseBackup(before, { allowLegacy: true });
   assert.equal(migrated.version, 7);
-  assert.equal(migrated.app_version, '1.3.0');
+  assert.equal(migrated.app_version, '1.3.3');
   const expectedRecords = JSON.parse(JSON.stringify(source.records));
   delete expectedRecords[0].interactions[0].image;
   expectedRecords[0].ticket_quantity=1;expectedRecords[0].ticket_type='付费';expectedRecords[0].ticket_is_free=false;expectedRecords[0].member_roles=[];expectedRecords[0].interactions[0].participant_groups=[];
@@ -267,7 +267,7 @@ test('schema 1 migration drops images and preserves all non-image records, money
 
 test('new install state is blank, contains no private seed, and returns independent objects', () => {
   const empty = Core.createEmptyState();
-  assert.deepEqual(empty, { format: 'idol-tracker-backup', version: 7, app_version: '1.3.0', records: [], members: [], config: { monthly_budget: 0, backup_reminder_days: 0 }, assets: { images: {} } });
+  assert.deepEqual(empty, { format: 'idol-tracker-backup', version: 7, app_version: '1.3.3', records: [], members: [], config: { monthly_budget: 0, backup_reminder_days: 0 }, assets: { images: {} } });
   assert.deepEqual(Core.validateState(empty), empty);
   empty.records.push(event()); empty.config.monthly_budget = 50; empty.assets.images['private.jpg'] = 'data:image/jpeg;base64,AAAA';
   assert.deepEqual(Core.createEmptyState().records, []);
@@ -343,7 +343,7 @@ test('1.1.0 schema 2 data drops images without changing other fields and remains
   previous.records[0].interactions[0].image = 'photo.jpg';
   previous.assets.images['photo.jpg'] = 'data:image/jpeg;base64,AAAA';
   const source = JSON.stringify(previous), expected = JSON.parse(JSON.stringify(previous));
-  expected.app_version = '1.3.0';
+  expected.app_version = '1.3.3';
   expected.version = 7;
   delete expected.records[0].interactions[0].image;
   expected.assets.images = {};
@@ -667,7 +667,7 @@ test('statistics omits empty activity types and months but includes free recorde
 test('v1.2 migration assigns stable identities and fills missing historical groups from the first profile group',()=>{
  const original={version:5,app_version:'1.1.5',members:[{name:'甲',groups:['团A','团B']},{name:'乙',groups:['团C']}],config:{monthly_budget:999},records:[event({member_roles:[{member:'乙',group:'团C'}],interactions:[{id:'missing',member:'甲',tickets:2,total_cost:80},{id:'explicit',member:'甲',affiliated_group:'团B',tickets:1,total_cost:60},{id:'shared',cheki_type:'multi',members:['甲','乙'],tickets:1,total_cost:90}]})]};
  const migrated=Core.validateState(original),e=migrated.records[0],id=migrated.members[0].id;
- assert.equal(migrated.version,7);assert.equal(migrated.app_version,'1.3.0');assert.ok(id);
+ assert.equal(migrated.version,7);assert.equal(migrated.app_version,'1.3.3');assert.ok(id);
  assert.equal(e.interactions[0].member_id,id);assert.equal(e.interactions[0].participant_groups[0].group,'团A');assert.equal(e.interactions[1].participant_groups[0].group,'团B');assert.deepEqual(e.interactions[2].participant_groups.map(role=>role.group),['团A','团C']);
  assert.equal(Core.stats(migrated.records).total,23000);assert.equal(Core.stats(migrated.records).ticketCount,4);
  assert.deepEqual(Core.validateState(migrated),migrated);assert.equal(original.records[0].interactions[0].member_id,undefined);
@@ -904,7 +904,7 @@ test('v1.2.5 core: merch multi-entity links/renames/merges, online purchase foot
  // Backward compatibility with v1.2.0..1.2.4 backups (including legacy is_theme & phone_photo)
  const v124=JSON.stringify({format:'idol-tracker-backup',version:7,app_version:'1.2.4',records:[event({id:'old-124',event_type:'phone_photo',interactions:[{type:'cheki',member:'乙',benefit_format:'theme',is_theme:true,tickets:1,price_per_ticket:50,total_cost:50}]})],members:[],config:{monthly_budget:0,backup_reminder_days:0}});
  const restored=Core.parseBackup(v124);
- assert.equal(restored.app_version,'1.3.0');
+ assert.equal(restored.app_version,'1.3.3');
  assert.equal(restored.records[0].interactions[0].is_theme,true);
 });
 
@@ -925,6 +925,7 @@ test('v1.3.0 core: entitySpendingSummary (members/groups/organizers sorted desce
   ]})
  ]);
  data.members=[{name:'甲',groups:['团A']},{name:'乙',groups:['团B']}];
+ data.config.group_profiles=[{name:'团A',organizers:['幻影社']},{name:'团B',organizers:['周边社']}];
  data=Core.validateState(data);
  const summary=Core.entitySpendingSummary(data,data.records);
  assert.deepEqual(summary.members.map(r=>[r.name,r.cost]),[['甲',16501],['乙',10500]]);
@@ -932,10 +933,10 @@ test('v1.3.0 core: entitySpendingSummary (members/groups/organizers sorted desce
  assert.equal(summary.members[1].phoneCount,1);
  assert.equal(summary.members[1].merchCount,2);
  assert.deepEqual(summary.groups.map(r=>[r.name,r.cost]),[['团B',30500],['团A',16501]]);
- assert.deepEqual(summary.organizers.map(r=>[r.name,r.cost]),[['幻影社',24501],['星尘社',24500],['周边社',10000]]);
+ assert.deepEqual(summary.organizers.map(r=>[r.name,r.cost]),[['周边社',30500],['幻影社',21501],['星尘社',5000]]);
  const vids=Core.parseBackup(JSON.stringify({
   ...data,
-  app_version:'1.2.5',
+  app_version:'1.3.0',
   records:[event({id:'v-test',interactions:[{type:'phone',member:'甲',tickets:1,total_cost:0,attachments:[
    {id:'m1',data:'https://idol.local/photos/'+aHash+'.webm'},
    {id:'m2',data:'https://idol.local/photos/'+aHash+'.mkv'},
@@ -944,7 +945,69 @@ test('v1.3.0 core: entitySpendingSummary (members/groups/organizers sorted desce
    {id:'m5',data:'data:video/mp4;base64,AAAA',media_type:'video'}
   ]}]})]
  }));
- assert.equal(vids.app_version,'1.3.0');
+ assert.equal(vids.app_version,'1.3.3');
  assert.equal(vids.records[0].interactions[0].attachments.length,5);
  assert.throws(()=>Core.validateState({...data,records:[event({id:'bad-v',interactions:[{type:'phone',member:'甲',tickets:1,total_cost:0,attachments:[{id:'x',data:'https://idol.local/photos/'+aHash+'.avi'}]}]})]}),/媒体格式/);
+});
+
+test('v1.3.1 core: organizer spending excludes drink_fee and unaffiliated guest groups on hosted events',()=>{
+ let data=state([
+  event({id:'host-only',date:'2026-11-10',organizers:['主催A'],ticket_fee:80,drink_fee:20,interactions:[
+   {type:'cheki',cheki_type:'individual',member:'客人甲',tickets:3,price_per_ticket:100,total_cost:300,participant_groups:[{member:'客人甲',group:'外团'}]},
+   {type:'cheki',cheki_type:'individual',member:'自担乙',tickets:1,price_per_ticket:70,total_cost:70,participant_groups:[{member:'自担乙',group:'旗下团'}]}
+  ]}),
+  event({id:'away-show',date:'2026-11-12',organizers:['主催B'],ticket_fee:100,drink_fee:20,interactions:[
+   {type:'cheki',cheki_type:'individual',member:'自担乙',tickets:2,price_per_ticket:70,total_cost:140,participant_groups:[{member:'自担乙',group:'旗下团'}]}
+  ]})
+ ]);
+ data.members=[{name:'客人甲',groups:['外团']},{name:'自担乙',groups:['旗下团']}];
+ data.config.group_profiles=[{name:'旗下团',organizers:['主催A']},{name:'外团',organizers:['外社']}];
+ data=Core.validateState(data);
+ const orgs=Core.entitySpendingSummary(data,data.records).organizers;
+ assert.deepEqual(orgs.map(r=>[r.name,r.cost]),[['外社',30000],['主催A',29000],['主催B',10000]]);
+});
+
+test('v1.3.2 core: entitySpendingSummary deduplicates multi-member/multi-group counts and itemName prefers group_name for group items',()=>{
+ let data=state([
+  event({id:'multi-same',date:'2026-11-18',organizers:['主催甲'],ticket_fee:0,interactions:[
+   {type:'cheki',cheki_type:'multi',members:['成员甲','成员乙'],tickets:1,price_per_ticket:100,total_cost:100,participant_groups:[{member:'成员甲',group:'同团A'},{member:'成员乙',group:'同团A'}]},
+   {type:'merch',item_name:'双团徽章',quantity:2,price:30,total_cost:60,affiliated_groups:['同团A','同团B']}
+  ]})
+ ]);
+ data.members=[{name:'成员甲',groups:['同团A']},{name:'成员乙',groups:['同团A']}];
+ data.config.group_profiles=[{name:'同团A',organizers:['主催甲']},{name:'同团B',organizers:['主催甲']}];
+ data=Core.validateState(data);
+ const summary=Core.entitySpendingSummary(data,data.records);
+ const grpA=summary.groups.find(r=>r.name==='同团A');
+ const orgA=summary.organizers.find(r=>r.name==='主催甲');
+ assert.equal(grpA.chekiCount,1);
+ assert.equal(grpA.merchCount,2);
+ assert.equal(grpA.cost,13000);
+ assert.equal(orgA.chekiCount,1);
+ assert.equal(orgA.merchCount,2);
+ assert.equal(orgA.cost,16000);
+ assert.equal(Core.itemName({type:'cheki',cheki_type:'group',member:'旧字段',group_name:'正确团'}),'正确团');
+ assert.equal(Core.parseBackup(JSON.stringify({...data,app_version:'1.3.1'})).app_version,'1.3.3');
+});
+
+test('v1.3.3 core: groupSummary distinguishes cheki, phone photo, group cheki, and group phone',()=>{
+ let data=state([
+  event({id:'grp-dist',date:'2026-11-20',performing_groups:['星光团'],interactions:[
+   {type:'cheki',cheki_type:'individual',member:'成员甲',tickets:3,price_per_ticket:80,total_cost:240,participant_groups:[{member:'成员甲',group:'星光团'}]},
+   {type:'phone',cheki_type:'individual',member:'成员甲',tickets:2,price_per_ticket:0,total_cost:0,participant_groups:[{member:'成员甲',group:'星光团'}]},
+   {type:'cheki',cheki_type:'group',group_name:'星光团',tickets:1,price_per_ticket:150,total_cost:150},
+   {type:'phone',cheki_type:'group',group_name:'星光团',tickets:1,price_per_ticket:30,total_cost:30}
+  ]})
+ ]);
+ data.members=[{name:'成员甲',groups:['星光团']}];
+ data=Core.validateState(data);
+ const summary=Core.groupSummary(data,'星光团',{});
+ assert.equal(summary.shared,42000);
+ assert.equal(summary.members.length,1);
+ assert.equal(summary.members[0].chekiCount,3);
+ assert.equal(summary.members[0].phoneCount,2);
+ assert.equal(summary.members[0].count,5);
+ assert.deepEqual(summary.groupCheki,{count:1,cost:15000});
+ assert.deepEqual(summary.groupPhone,{count:1,cost:3000});
+ assert.equal(Core.parseBackup(JSON.stringify({...data,app_version:'1.3.2'})).app_version,'1.3.3');
 });

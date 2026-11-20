@@ -11,7 +11,7 @@ ASSETS = ROOT / 'app/src/main/assets'
 
 
 def public_seed():
-    return {'format': 'idol-tracker-backup', 'version': 7, 'app_version': '1.3.0',
+    return {'format': 'idol-tracker-backup', 'version': 7, 'app_version': '1.3.3',
             'records': [], 'members': [], 'config': {'monthly_budget': 0, 'backup_reminder_days': 0}, 'assets': {'images': {}}}
 
 

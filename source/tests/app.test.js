@@ -43,6 +43,7 @@ class MiniDocument {
     this.nodes = []; this.body = new MiniNode(this, 'body');new MiniNode(this,'header',{class:'app-header'},this.body);
     for (const id of ['main', 'modal-title', 'modal-body', 'modal-close', 'add-event', 'toast']) new MiniNode(this, id.includes('close') || id === 'add-event' ? 'button' : 'div', { id }, this.body);
     new MiniNode(this, 'div', { id: 'modal', class: 'hidden' }, this.body);
+    new MiniNode(this, 'button', { id: 'modal-back', class: 'icon hidden' }, this.body);
     new MiniNode(this, 'div', { id: 'photo-lightbox', class: 'lightbox hidden' }, this.body);
     new MiniNode(this, 'div', { class: 'sheet' }, this.body);
     const nav = new MiniNode(this, 'nav', { id: 'nav' }, this.body);
@@ -85,12 +86,13 @@ class MiniDocument {
 function fixture(records) { return { ...C.createEmptyState(), records }; }
 function event(id = 'event-1', interactions = []) { return { id, date: '2026-10-28', event_type: 'performance', event_name: '测试演出', city: '测试城市', venue: '测试场地', ticket_fee: 0, drink_fee: 0, interactions }; }
 function launch(input, options = {}) {
-  const document = new MiniDocument(), writes = [], exports = [], photoRequests=[], photoLimits=[], photoAllowVideos=[], savedPhotos=[];
+  const document = new MiniDocument(), writes = [], exports = [], photoRequests=[], photoLimits=[], photoAllowVideos=[], savedPhotos=[], playedVideos=[];
   const bridge = {
     readState: () => JSON.stringify(input),
     pickPhoto: token=>{photoRequests.push(token);photoLimits.push(1);photoAllowVideos.push(false);},
     pickPhotos: (token,max)=>{photoRequests.push(token);photoLimits.push(max);photoAllowVideos.push(false);},
     pickMedia: (token,max,allowVideo)=>{photoRequests.push(token);photoLimits.push(max);photoAllowVideos.push(!!allowVideo);},
+    playVideo: (src,title)=>playedVideos.push({src,title}),
     savePhotoToGallery: src=>savedPhotos.push(src),
     lastExportTime:()=>options.lastExportTime||0,
     writeState: text => { writes.push(JSON.parse(text)); return '{"ok":true}'; },
@@ -114,7 +116,7 @@ function launch(input, options = {}) {
   for(const name of ['extras.js','photos.js'])vm.runInContext(fs.readFileSync(path.join(base,name),'utf8'),sandbox);
   vm.runInContext(fs.readFileSync(path.join(base, 'app.js'), 'utf8'), sandbox);
   const get = selector => { const node = document.querySelector(selector); assert.ok(node, 'Missing control: ' + selector); return node; };
-  return { document, sandbox, writes, exports, photoRequests, photoLimits, photoAllowVideos, savedPhotos, get, click: selector => get(selector).click() };
+  return { document, sandbox, writes, exports, photoRequests, photoLimits, photoAllowVideos, savedPhotos, playedVideos, get, click: selector => get(selector).click() };
 }
 
 test('UI export preserves a valid near-limit state without pretty-print expansion', () => {
@@ -606,7 +608,7 @@ test('v1.2.3 UI updates: avatars, synced phone picker, settings rename, organize
  const backupHtml=app.get('#main').innerHTML;
  assert.match(backupHtml,/<h1>设置<\/h1>/);
  assert.doesNotMatch(backupHtml,/备份与设置|KEEP YOUR MEMORIES SAFE|完整备份包含活动|使用说明|消费按活动日期/);
- assert.match(backupHtml,/1\.3\.0.*Android 8\.0/);
+ assert.match(backupHtml,/1\.3\.3.*Android 8\.0/);
  assert.doesNotMatch(backupHtml,/导出桌面兼容记录|电脑记录|每月预算/);
  app.click('#backup-organizers');
  app.click('#organizer-create');
@@ -828,6 +830,7 @@ test('v1.3.0 UI updates: search box placement, overview per-member/group/organiz
   {...event('m-now-2',[{type:'merch',item_name:'应援棒',quantity:1,price:120,total_cost:120,merch_members:['高花费'],affiliated_groups:['主推团'],merch_organizers:['周边社']}]),date:month+'-08',event_type:'merch_only',city:'-',venue:'线上购买'}
  ]);
  input.members=[{name:'高花费',groups:['主推团']},{name:'低花费',groups:['副团']}];
+ input.config.group_profiles=[{name:'主推团',organizers:['主社']},{name:'副团',organizers:['周边社']}];
  const app=launch(input,{realStats:true});
  // 1. Records search box placed below 4 dropdowns; removed buttons stay absent; event detail wraps主办事务所 safely without shrinking label
  app.click('#nav [data-tab=records]');
@@ -876,16 +879,19 @@ test('v1.3.0 UI updates: search box placement, overview per-member/group/organiz
  app.click('#item-photos-add');
  assert.equal(app.photoAllowVideos.at(-1),true);
  app.sandbox.onNativePhotos(app.photoRequests.at(-1),['https://idol.local/photos/'+vHash+'.mp4']);
- assert.match(app.get('#item-photos').innerHTML,/<video[^>]+src="https:\/\/idol\.local\/photos\/c{64}\.mp4#t=0\.1"[^>]*>/);
+ assert.match(app.get('#item-photos').innerHTML,/https:\/\/idol\.local\/thumbs\/c{64}\.mp4\.jpg/);
  assert.match(app.get('#item-photos').innerHTML,/▶ 视频/);
  app.get('#i-name').value='高花费';app.get('#i-name').dispatch('input');
  app.click('#save-item');
+ assert.equal(app.get('#toast').textContent,'手机合影已保存');
  app.click('#modal-close');
- // Verify video appears in 全部 & 手机合影, opens playable video detail & lightbox, and saves to gallery
+ // Verify video appears in 全部 & 手机合影, opens playable video detail, native player & lightbox, and saves to gallery
  app.click('[data-album-category=phone]');
  assert.equal(app.document.querySelectorAll('[data-album-photo]').length,1);
  app.click('[data-album-photo="0"]');
  assert.match(app.get('#modal-body').innerHTML,/<video id="album-preview-video"[^>]+controls/);
+ app.click('#album-native-play');
+ assert.equal(app.playedVideos.at(-1).src,'https://idol.local/photos/'+vHash+'.mp4');
  app.click('#album-save-photo');
  assert.equal(app.savedPhotos.at(-1),'https://idol.local/photos/'+vHash+'.mp4');
  app.click('#album-fullscreen');
@@ -893,5 +899,187 @@ test('v1.3.0 UI updates: search box placement, overview per-member/group/organiz
  assert.match(app.get('#photo-lightbox').innerHTML,/<video id="lightbox-video"[^>]+controls/);
  app.click('#lightbox-close');
  assert.equal(app.get('#photo-lightbox').classList.contains('hidden'),true);
+ app.click('#modal-close');
+});
+
+test('v1.3.1 UI updates: records dropdown scoping & frequency/date sorting and entity manager count/spend sorting',()=>{
+ const now=new Date(),month=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
+ const input=fixture([
+  {...event('cur-a1',[{type:'cheki',member:'乙',tickets:3,price_per_ticket:100,total_cost:300,participant_groups:[{member:'乙',group:'高次团'}]}]),date:month+'-02',event_type:'performance',venue:'高频馆',organizers:['高频社']},
+  {...event('cur-a2',[{type:'cheki',member:'甲',tickets:1,price_per_ticket:10,total_cost:10,participant_groups:[{member:'甲',group:'新近团'}]}]),date:month+'-15',event_type:'performance',venue:'101Live',organizers:['较新社']},
+  {...event('cur-a3',[{type:'cheki',member:'乙',tickets:2,price_per_ticket:100,total_cost:200,participant_groups:[{member:'乙',group:'高次团'}]}]),date:month+'-09',event_type:'bonus_only',venue:'高频馆',organizers:['高频社']},
+  {...event('cur-a4',[{type:'cheki',member:'丙',tickets:1,price_per_ticket:50,total_cost:50,participant_groups:[{member:'丙',group:'中间团'}]}]),date:month+'-04',event_type:'off_meeting',venue:'较早馆',organizers:['较早社']},
+  {...event('old-1',[{type:'cheki',member:'历史人',tickets:10,price_per_ticket:100,total_cost:1000,participant_groups:[{member:'历史人',group:'历史团'}]}]),date:'2025-05-01',event_type:'other',venue:'历史场地',organizers:['历史社']}
+ ]);
+ input.members=[{name:'甲',groups:['新近团']},{name:'乙',groups:['高次团']},{name:'丙',groups:['中间团']},{name:'历史人',groups:['历史团']}];
+ input.config.group_profiles=[{name:'高次团',organizers:['高频社']},{name:'新近团',organizers:['较新社']},{name:'中间团',organizers:['较早社']},{name:'历史团',organizers:['历史社']}];
+ const app=launch(input);
+ // 1. Records dropdowns default to current month, exclude out-of-range options, keep 全部* first, and sort remaining by count desc then latest date desc
+ app.click('#nav [data-tab=records]');
+ const html=app.get('#main').innerHTML;
+ const selHtml=id=>{const m=new RegExp('<select id="'+id+'"[^>]*>([\\s\\S]*?)</select>').exec(html);assert.ok(m,'Missing select '+id);return m[1];};
+ const typeSel=selHtml('event-type');
+ assert.ok(typeSel.startsWith('<option value=""'),typeSel);
+ assert.ok(!typeSel.includes('value="other"'),'out-of-period type excluded');
+ assert.ok(typeSel.indexOf('value="performance"')<typeSel.indexOf('value="bonus_only"'));
+ assert.ok(typeSel.indexOf('value="bonus_only"')<typeSel.indexOf('value="off_meeting"'));
+ const venueSel=selHtml('record-venue');
+ assert.ok(venueSel.startsWith('<option value=""'),venueSel);
+ assert.ok(!venueSel.includes('历史场地'));
+ assert.ok(venueSel.indexOf('高频馆')<venueSel.indexOf('101Live'));
+ assert.ok(venueSel.indexOf('101Live')<venueSel.indexOf('较早馆'));
+ const memberSel=selHtml('record-member');
+ assert.ok(memberSel.startsWith('<option value=""'),memberSel);
+ assert.ok(!memberSel.includes('历史人'));
+ assert.ok(memberSel.indexOf('>乙<')<memberSel.indexOf('>甲<'));
+ assert.ok(memberSel.indexOf('>甲<')<memberSel.indexOf('>丙<'));
+ const orgSel=selHtml('record-organizer');
+ assert.ok(orgSel.startsWith('<option value=""'),orgSel);
+ assert.ok(!orgSel.includes('历史社'));
+ assert.ok(orgSel.indexOf('高频社')<orgSel.indexOf('较新社'));
+ assert.ok(orgSel.indexOf('较新社')<orgSel.indexOf('较早社'));
+ // 2. Settings managers (Members / Groups / Organizers) sort by count then spend descending
+ app.click('#nav [data-tab=backup]');
+ app.click('#backup-members');
+ const memMgr=app.get('#managed-members').innerHTML;
+ assert.ok(memMgr.indexOf('>历史人<')<memMgr.indexOf('>乙<'));
+ assert.ok(memMgr.indexOf('>乙<')<memMgr.indexOf('>甲<'));
+ app.click('#modal-close');
+ app.click('#backup-groups');
+ const grpMgr=app.get('#managed-groups').innerHTML;
+ assert.ok(grpMgr.indexOf('>历史团<')<grpMgr.indexOf('>高次团<'));
+ app.click('#modal-close');
+ app.click('#backup-organizers');
+ const orgMgr=app.get('#managed-organizers').innerHTML;
+ assert.ok(orgMgr.indexOf('>历史社<')<orgMgr.indexOf('>高频社<'));
+ app.click('#modal-close');
+});
+
+test('v1.3.2 UI fixes: group cheki deduplication, photo date synchronization on bind and event date edit, and group ranking safety',()=>{
+ const photo={id:'p-132',data:'data:image/png;base64,AAAA',caption:'现场合影'};
+ const input=fixture([
+  {...event('ev-past',[
+   {type:'cheki',cheki_type:'group',group_name:'星光团',benefit_format:'custom:grp',benefit_label:'团切',tickets:1,price_per_ticket:120,total_cost:120,attachments:[photo]}
+  ]),date:'2026-10-05',event_name:'十月Live',attachments:[{id:'p-ev',data:'data:image/png;base64,AAAA',caption:''}]}
+ ]);
+ input.config.benefit_types=[{id:'grp',label:'团切',counts_as_photo:true}];
+ input.members=[{name:'星光团',groups:['其它团'],archived:true},{name:'成员甲',groups:['星光团']}];
+ input.config.group_profiles=[{name:'星光团',organizers:['星光社']}];
+ const app=launch(input);
+ // 1. Group detail and event detail do not duplicate group name or 团体特典 prefix, and group detail hides retired 关联记录金额
+ app.click('[data-event=ev-past]');
+ const evHtml=app.get('#modal-body').innerHTML;
+ assert.doesNotMatch(evHtml,/团体特典 · 团切/);
+ assert.match(evHtml,/member-avatar/);
+ app.click('#modal-close');
+ app.click('#nav [data-tab=stats]');
+ app.click('[data-stats-section=groups]');
+ app.click('[data-group-profile="星光团"]');
+ const grpHtml=app.get('#modal-body').innerHTML;
+ assert.doesNotMatch(grpHtml,/关联记录金额/);
+ assert.doesNotMatch(grpHtml,/团体特典 · 团切/);
+ const histIdx=grpHtml.indexOf('<div id="person-history">');
+ assert.ok(histIdx>=0,'person-history container present');
+ const cardHtml=grpHtml.slice(histIdx);
+ assert.equal((cardHtml.match(/星光团/g)||[]).length,1,'group cheki card should display group name once, not twice');
+ app.click('#modal-close');
+ // 2. Stats -> 成员 -> 团体特典 does not break or hide group when an archived member shares the same name
+ app.click('[data-stats-section=members]');
+ app.get('#member-kind').value='group';app.get('#member-kind').dispatch('change');
+ assert.match(app.get('#member-results').innerHTML,/星光团/);
+ assert.match(app.get('#member-results').innerHTML,/星光社/);
+ // 3. Adding a phone photo and binding it to an existing past event syncs #i-phone-date and displays the event date in 照片 tab
+ app.click('#nav [data-tab=photos]');
+ assert.match(app.get('#album-results').innerHTML,/<strong>十月Live<\/strong><small>2026-10-05<\/small><small>演出合影<\/small>/);
+ app.click('#add-phone-photo');
+ app.get('#i-name').value='成员甲';app.get('#i-name').dispatch('input');
+ app.get('#i-phone-event').value='ev-past';app.get('#i-phone-event').dispatch('change');
+ assert.equal(app.get('#i-phone-date').value,'2026-10-05');
+ app.click('#item-photos-add');
+ app.sandbox.onNativePhotos(app.get('#item-photos').dataset.photoToken,['data:image/png;base64,AAAA']);
+ app.click('#save-item');
+ const boundPhone=app.writes.at(-1).records.find(r=>r.id==='ev-past').interactions.find(i=>i.type==='phone');
+ assert.equal(boundPhone.shot_at,undefined,'bound phone photo matching event date omits redundant shot_at');
+ // 4. Editing event date synchronizes photo dates in 照片 tab
+ app.click('#edit-basics');
+ app.get('#e-date').value='2026-10-08';
+ app.click('#save-event');
+ app.click('#modal-close');
+ app.click('#nav [data-tab=photos]');
+ const albumAfterEdit=app.get('#album-results').innerHTML;
+ assert.match(albumAfterEdit,/2026-10-08/);
+ assert.doesNotMatch(albumAfterEdit,/2026-10-05/);
+ // 5. Standalone phone photo edited via editEvent shows 手机合影 (not raw phone_photo) and syncs photo date
+ app.click('#add-phone-photo');
+ app.get('#i-name').value='成员甲';app.get('#i-name').dispatch('input');
+ app.get('#i-phone-date').value='2026-10-10';
+ app.click('#item-photos-add');
+ app.sandbox.onNativePhotos(app.get('#item-photos').dataset.photoToken,['data:image/png;base64,AAAA']);
+ app.click('#save-item');
+ assert.match(app.get('#modal-body').innerHTML,/未绑定具体活动/);
+ app.click('#edit-basics');
+ assert.match(app.get('#modal-body').innerHTML,/<option value="phone_photo" selected>手机合影<\/option>/);
+ assert.doesNotMatch(app.get('#modal-body').innerHTML,/>phone_photo</);
+ app.get('#e-date').value='2026-10-12';
+ app.click('#save-event');
+ app.click('#modal-close');
+ app.click('#nav [data-tab=photos]');
+ assert.match(app.get('#album-results').innerHTML,/2026-10-12/);
+ assert.doesNotMatch(app.get('#album-results').innerHTML,/2026-10-10/);
+});
+
+test('v1.3.3 UI updates: clickable performing groups & member avatars in event detail, group member distribution breakdown, and modal back stack',()=>{
+ const input=fixture([
+  {...event('ev-133',[
+   {type:'cheki',cheki_type:'individual',member:'成员甲',tickets:2,price_per_ticket:80,total_cost:160,participant_groups:[{member:'成员甲',group:'星光团'}]},
+   {type:'phone',cheki_type:'individual',member:'成员甲',tickets:1,price_per_ticket:0,total_cost:0,participant_groups:[{member:'成员甲',group:'星光团'}]},
+   {type:'cheki',cheki_type:'multi',members:['成员甲','成员乙'],tickets:1,price_per_ticket:100,total_cost:100,participant_groups:[{member:'成员甲',group:'星光团'},{member:'成员乙',group:'星光团'}]},
+   {type:'cheki',cheki_type:'group',group_name:'星光团',tickets:1,price_per_ticket:150,total_cost:150},
+   {type:'phone',cheki_type:'group',group_name:'星光团',tickets:1,price_per_ticket:30,total_cost:30}
+  ]),date:'2026-11-20',event_name:'星光祭',city:'北京',venue:'星光剧场',organizers:['星光社'],performing_groups:['星光团']}
+ ]);
+ input.members=[{name:'成员甲',groups:['星光团']},{name:'成员乙',groups:['星光团']}];
+ input.config.group_profiles=[{name:'星光团',organizers:['星光社']}];
+ const app=launch(input);
+ // 1. Open activity detail: performing group has avatar chip, member & group items are clickable, back button starts hidden
+ app.click('[data-event=ev-133]');
+ assert.equal(app.get('#modal-back').classList.contains('hidden'),true);
+ const evHtml=app.get('#modal-body').innerHTML;
+ assert.match(evHtml,/data-event-group="0"[\s\S]*member-avatar[\s\S]*星光团/);
+ assert.match(evHtml,/data-item-member=/);
+ assert.match(evHtml,/data-item-group="星光团"/);
+ assert.match(evHtml,/data-event-city="北京"/);
+ assert.match(evHtml,/data-event-venue="星光剧场"/);
+ // 2. Click performing group -> opens group detail with separated 拍立得 / 手机合影 / 团体特典 / 团体手机合影 distribution, and back button appears
+ app.click('[data-event-group="0"]');
+ assert.equal(app.get('#modal-back').classList.contains('hidden'),false);
+ assert.match(app.get('#modal-title').textContent,/星光团 · 团体/);
+ const grpHtml=app.get('#modal-body').innerHTML;
+ assert.match(grpHtml,/拍立得 3 张 · 手机合影 1 张/);
+ assert.match(grpHtml,/团体特典[\s\S]*拍立得 1 张/);
+ assert.match(grpHtml,/团体手机合影[\s\S]*手机合影 1 张/);
+ // 3. Click member inside group member distribution -> opens member detail; back returns to group detail, then back returns to event detail, then back closes modal
+ const distBtn=app.document.querySelector('[data-dist-member]');
+ assert.ok(distBtn,'clickable member row in group distribution');
+ distBtn.dispatch('click');
+ assert.match(app.get('#modal-title').textContent,/成员甲 · 互动记录/);
+ assert.equal(app.get('#modal-back').classList.contains('hidden'),false);
+ // Step back #1 via #modal-back -> returns to group detail
+ app.click('#modal-back');
+ assert.match(app.get('#modal-title').textContent,/星光团 · 团体/);
+ assert.equal(app.get('#modal-back').classList.contains('hidden'),false);
+ // Step back #2 via Android system back -> returns to event detail
+ assert.equal(app.sandbox.onNativeBack(),true);
+ assert.equal(app.get('#modal-title').textContent,'星光祭');
+ assert.equal(app.get('#modal-back').classList.contains('hidden'),true);
+ // Step back #3 via Android system back -> closes modal
+ assert.equal(app.sandbox.onNativeBack(),true);
+ assert.equal(app.get('#modal').classList.contains('hidden'),true);
+ // 4. Clicking member avatar directly inside event detail opens member detail and back returns to event detail
+ app.click('[data-event=ev-133]');
+ app.document.querySelector('[data-item-member]').dispatch('click');
+ assert.match(app.get('#modal-title').textContent,/成员甲 · 互动记录/);
+ assert.equal(app.sandbox.onNativeBack(),true);
+ assert.equal(app.get('#modal-title').textContent,'星光祭');
  app.click('#modal-close');
 });

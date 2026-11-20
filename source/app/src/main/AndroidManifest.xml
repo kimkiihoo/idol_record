@@ -2,6 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="cn.local.idoltracker">
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
     <application android:label="偶像活动手账" android:icon="@drawable/ic_idol"
+        android:hardwareAccelerated="true"
         android:theme="@style/AppTheme" android:allowBackup="false" android:fullBackupContent="false"
         android:dataExtractionRules="@xml/data_extraction_rules" android:usesCleartextTraffic="false"
         android:supportsRtl="true" android:debuggable="false">

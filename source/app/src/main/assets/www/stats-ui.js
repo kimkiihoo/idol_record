@@ -191,7 +191,7 @@
           (block.rows.length ? block.rows.length + ' ' + block.unit + ' · 合计 ' + currency(ctx, sum) : '暂无消费') +
           '</small></div><div id="stats-entity-' + block.kind + '">' + entityRows(ctx, block.kind, block.rows, stats.total, block.empty) + '</div></div>';
       }).join('') +
-      '<p class="chart-note">均按所选时段与花费金额由高到低排序；多人合影与联合关联按人数或关联对象均摊至分；点按条目可查看对应详情。</p>';
+      '<p class="chart-note">均按所选时段与花费金额由高到低排序；多人合影按人数均摊至分；事务所花费统计其主办活动的门票及旗下偶像团体的全部花费；点按条目可查看详情。</p>';
   }
   function render(ctx) {
     const C = ctx.C, stats = C.stats(ctx.records), data = buildTrend(ctx), activeDays = new Set(ctx.records.map(row => row.date)).size;
@@ -236,7 +236,7 @@
   function showMonthly(ctx) {
     const data = buildMonthly(ctx);
     if (!ctx.modal) return;
-    ctx.modal('月度汇总', monthly(ctx,data));
+    ctx.modal('月度汇总', monthly(ctx,data), false, { key: 'monthly', restore: () => showMonthly(ctx.fresh ? ctx.fresh() : ctx) });
     const host=document.querySelector('#modal-body');
     host.onclick=event=>{
       const button=event.target.closest('[data-stats-action]');

@@ -2,22 +2,29 @@ package cn.local.idoltracker;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Dialog;
 import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.ContentValues;
 import android.content.Intent;
+import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
+import android.graphics.Paint;
 import android.graphics.Rect;
+import android.media.MediaMetadataRetriever;
 import android.util.Base64;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.provider.MediaStore;
+import android.provider.OpenableColumns;
 import android.util.AtomicFile;
+import android.view.Gravity;
+import android.view.Window;
 import android.webkit.JavascriptInterface;
 import android.webkit.MimeTypeMap;
 import android.webkit.WebChromeClient;
@@ -26,7 +33,12 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.Button;
 import android.widget.FrameLayout;
+import android.widget.LinearLayout;
+import android.widget.MediaController;
+import android.widget.TextView;
+import android.widget.VideoView;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -120,10 +132,13 @@ public final class MainActivity extends Activity {
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setSupportMultipleWindows(false);
         settings.setJavaScriptCanOpenWindowsAutomatically(false);
-        settings.setMediaPlaybackRequiresUserGesture(true);
+        settings.setMediaPlaybackRequiresUserGesture(false);
         WebView.setWebContentsDebuggingEnabled(false);
         webView.addJavascriptInterface(new Bridge(), "AndroidBridge");
         webView.setWebChromeClient(new WebChromeClient() {
+            @Override public Bitmap getDefaultVideoPoster() {
+                return Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888);
+            }
             @Override public boolean onJsConfirm(WebView view, String url, String message, android.webkit.JsResult result) {
                 AlertDialog dialog = new AlertDialog.Builder(MainActivity.this)
                     .setTitle("偶像活动手账")
@@ -211,8 +226,63 @@ public final class MainActivity extends Activity {
             if (count > 0) remaining -= count;
             return count;
         }
+        @Override public int available() throws IOException {
+            return (int) Math.min(Integer.MAX_VALUE, remaining);
+        }
         @Override public void close() throws IOException {
             wrapped.close();
+        }
+    }
+
+    private File ensureVideoThumb(File videoFile) throws IOException {
+        File dir = new File(getCacheDir(), "video-thumbs");
+        if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("无法创建缩略图目录");
+        File thumb = new File(dir, videoFile.getName() + ".jpg");
+        if (thumb.isFile() && thumb.length() > 0) return thumb;
+        Bitmap frame = null;
+        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+        try {
+            retriever.setDataSource(videoFile.getAbsolutePath());
+            frame = retriever.getFrameAtTime(100000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+            if (frame == null) frame = retriever.getFrameAtTime(-1);
+        } catch (Exception ignored) {
+        } finally {
+            try { retriever.release(); } catch (Exception ignored) {}
+        }
+        Bitmap target = null;
+        try {
+            if (frame != null && frame.getWidth() > 0 && frame.getHeight() > 0) {
+                double scale = Math.min(1.0, 480.0 / Math.max(frame.getWidth(), frame.getHeight()));
+                int w = Math.max(1, (int) Math.round(frame.getWidth() * scale));
+                int h = Math.max(1, (int) Math.round(frame.getHeight() * scale));
+                target = Bitmap.createScaledBitmap(frame, w, h, true);
+            } else {
+                target = Bitmap.createBitmap(320, 240, Bitmap.Config.ARGB_8888);
+                Canvas canvas = new Canvas(target);
+                canvas.drawColor(Color.rgb(253, 232, 240));
+                Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+                paint.setColor(Color.rgb(226, 101, 146));
+                canvas.drawCircle(160, 120, 42, paint);
+            }
+            File temp = File.createTempFile("thumb-", ".tmp", dir);
+            try (FileOutputStream out = new FileOutputStream(temp)) {
+                target.compress(Bitmap.CompressFormat.JPEG, 82, out);
+                out.flush();
+            }
+            if (!thumb.isFile() && !temp.renameTo(thumb)) {
+                try (FileInputStream in = new FileInputStream(temp); FileOutputStream out = new FileOutputStream(thumb)) {
+                    byte[] buf = new byte[8192];
+                    int n;
+                    while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+                }
+                temp.delete();
+            } else if (temp.exists()) {
+                temp.delete();
+            }
+            return thumb;
+        } finally {
+            if (target != null && target != frame) target.recycle();
+            if (frame != null) frame.recycle();
         }
     }
 
@@ -222,6 +292,19 @@ public final class MainActivity extends Activity {
             String path = uri.getPath();
             if (!"https".equals(uri.getScheme()) || !"idol.local".equals(uri.getHost()) || uri.getPort() != -1
                 || path == null || path.contains("..") || path.contains("\\") || path.contains("\0")) return denied();
+            if (path.startsWith("/thumbs/") && path.endsWith(".jpg")) {
+                String mediaName = path.substring("/thumbs/".length(), path.length() - 4);
+                String mediaUrl = ORIGIN + "/photos/" + mediaName;
+                if (!BackupArchive.isVideoUrl(mediaUrl)) return denied();
+                File videoFile = media.resolveMediaFile(mediaUrl);
+                if (!videoFile.isFile()) return denied();
+                File thumbFile = ensureVideoThumb(videoFile);
+                Map<String, String> headers = new HashMap<>();
+                headers.put("Cache-Control", "no-store");
+                headers.put("X-Content-Type-Options", "nosniff");
+                headers.put("Content-Length", String.valueOf(thumbFile.length()));
+                return new WebResourceResponse("image/jpeg", null, 200, "OK", headers, new FileInputStream(thumbFile));
+            }
             if (path.startsWith("/photos/")) {
                 String photoUrl = ORIGIN + path;
                 if (!BackupArchive.isPhotoUrl(photoUrl)) return denied();
@@ -233,6 +316,13 @@ public final class MainActivity extends Activity {
                 headers.put("Cache-Control", "no-store");
                 headers.put("X-Content-Type-Options", "nosniff");
                 headers.put("Accept-Ranges", "bytes");
+                headers.put("Access-Control-Allow-Origin", ORIGIN);
+                headers.put("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+                headers.put("Access-Control-Allow-Headers", "Range");
+                headers.put("Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges");
+                if ("OPTIONS".equalsIgnoreCase(request.getMethod())) {
+                    return new WebResourceResponse("text/plain", "UTF-8", 204, "No Content", headers, new ByteArrayInputStream(new byte[0]));
+                }
                 String rangeHeader = null;
                 Map<String, String> reqHeaders = request.getRequestHeaders();
                 if (reqHeaders != null) {
@@ -565,6 +655,82 @@ public final class MainActivity extends Activity {
             });
         }
 
+        @JavascriptInterface public void playVideo(String source, String title) {
+            final String trimmed = source == null ? "" : source.trim();
+            if (trimmed.isEmpty()) { notice("没有可播放的视频", false); return; }
+            runOnUiThread(() -> {
+                try {
+                    File targetFile;
+                    boolean tempPlayFile = false;
+                    if (BackupArchive.isPhotoUrl(trimmed)) {
+                        targetFile = media.resolveMediaFile(trimmed);
+                        if (!targetFile.isFile() || targetFile.length() == 0) throw new IOException("视频文件不存在");
+                    } else if (VIDEO_DATA.matcher(trimmed).find()) {
+                        int prefixEnd = trimmed.toLowerCase(Locale.ROOT).indexOf(";base64,");
+                        if (prefixEnd < 0) throw new IOException("视频数据格式无效");
+                        byte[] bytes = Base64.decode(trimmed.substring(prefixEnd + ";base64,".length()), Base64.DEFAULT);
+                        targetFile = File.createTempFile("play-", ".mp4", getCacheDir());
+                        tempPlayFile = true;
+                        try (FileOutputStream out = new FileOutputStream(targetFile)) { out.write(bytes); out.flush(); }
+                    } else {
+                        throw new IOException("不支持的视频来源");
+                    }
+                    final File cleanupTemp = tempPlayFile ? targetFile : null;
+                    Dialog dialog = new Dialog(MainActivity.this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+                    LinearLayout root = new LinearLayout(MainActivity.this);
+                    root.setOrientation(LinearLayout.VERTICAL);
+                    root.setBackgroundColor(Color.BLACK);
+                    LinearLayout bar = new LinearLayout(MainActivity.this);
+                    bar.setOrientation(LinearLayout.HORIZONTAL);
+                    bar.setGravity(Gravity.CENTER_VERTICAL);
+                    int pad = Math.round(14 * getResources().getDisplayMetrics().density);
+                    bar.setPadding(pad, pad, pad, pad);
+                    TextView label = new TextView(MainActivity.this);
+                    label.setText(title == null || title.trim().isEmpty() ? "视频播放" : title);
+                    label.setTextColor(Color.WHITE);
+                    label.setTextSize(15);
+                    label.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1f));
+                    Button closeBtn = new Button(MainActivity.this);
+                    closeBtn.setText("关闭");
+                    closeBtn.setTextColor(Color.WHITE);
+                    closeBtn.setBackgroundColor(Color.rgb(66, 36, 50));
+                    closeBtn.setOnClickListener(v -> dialog.dismiss());
+                    bar.addView(label);
+                    bar.addView(closeBtn);
+                    FrameLayout stage = new FrameLayout(MainActivity.this);
+                    VideoView videoView = new VideoView(MainActivity.this);
+                    FrameLayout.LayoutParams vlp = new FrameLayout.LayoutParams(-1, -1);
+                    vlp.gravity = Gravity.CENTER;
+                    stage.addView(videoView, vlp);
+                    MediaController controller = new MediaController(MainActivity.this);
+                    controller.setAnchorView(stage);
+                    videoView.setMediaController(controller);
+                    videoView.setVideoPath(targetFile.getAbsolutePath());
+                    videoView.setOnPreparedListener(mp -> {
+                        mp.setLooping(false);
+                        videoView.start();
+                        controller.show(3000);
+                    });
+                    videoView.setOnErrorListener((mp, what, extra) -> {
+                        notice("该视频格式暂无法解码播放（error " + what + "）", false);
+                        dialog.dismiss();
+                        return true;
+                    });
+                    root.addView(bar, new LinearLayout.LayoutParams(-1, -2));
+                    root.addView(stage, new LinearLayout.LayoutParams(-1, 0, 1f));
+                    dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+                    dialog.setContentView(root);
+                    dialog.setOnDismissListener(d -> {
+                        try { videoView.stopPlayback(); } catch (Exception ignored) {}
+                        if (cleanupTemp != null && cleanupTemp.exists()) cleanupTemp.delete();
+                    });
+                    dialog.show();
+                } catch (Exception error) {
+                    notice("无法播放视频：" + error.getMessage(), false);
+                }
+            });
+        }
+
         @JavascriptInterface public void savePhotoToGallery(String source) {
             final String trimmed = source == null ? "" : source.trim();
             if (trimmed.isEmpty()) { notice("没有可保存的照片或视频", false); return; }
@@ -794,8 +960,47 @@ public final class MainActivity extends Activity {
         startActivityForResult(document, requestCode);
     }
 
+    private String displayNameExtension(Uri uri) {
+        if (uri == null) return "";
+        try (Cursor cursor = getContentResolver().query(uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                String name = cursor.getString(0);
+                if (name != null) {
+                    int dot = name.lastIndexOf('.');
+                    if (dot >= 0 && dot + 1 < name.length()) {
+                        String tail = name.substring(dot + 1).toLowerCase(Locale.US);
+                        if (tail.matches("[a-z0-9]{2,5}")) return tail;
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        return "";
+    }
+
+    private String sniffContainerExt(Uri uri) {
+        if (uri == null) return "";
+        try (InputStream in = getContentResolver().openInputStream(uri)) {
+            if (in == null) return "";
+            byte[] head = new byte[16];
+            int n = in.read(head);
+            if (n >= 12 && head[4] == 'f' && head[5] == 't' && head[6] == 'y' && head[7] == 'p') {
+                String brand = new String(head, 8, 4, StandardCharsets.US_ASCII).toLowerCase(Locale.US);
+                if (brand.startsWith("qt")) return "mov";
+                if (brand.startsWith("3gp")) return "3gp";
+                if (brand.startsWith("m4v")) return "m4v";
+                return "mp4";
+            }
+            if (n >= 4 && head[0] == 0x1A && head[1] == 0x45 && head[2] == (byte) 0xDF && head[3] == (byte) 0xA3) {
+                return "mkv";
+            }
+        } catch (Exception ignored) {}
+        return "";
+    }
+
     private String uriExtension(Uri uri) {
         if (uri == null) return "";
+        String byColumn = displayNameExtension(uri);
+        if (!byColumn.isEmpty()) return byColumn;
         String path = uri.getPath();
         if (path != null) {
             int dot = path.lastIndexOf('.');
@@ -805,7 +1010,8 @@ public final class MainActivity extends Activity {
             }
         }
         String ext = MimeTypeMap.getFileExtensionFromUrl(uri.toString());
-        return ext == null ? "" : ext.toLowerCase(Locale.US);
+        if (ext != null && !ext.isEmpty()) return ext.toLowerCase(Locale.US);
+        return sniffContainerExt(uri);
     }
 
     private boolean isVideoUri(Uri uri) {

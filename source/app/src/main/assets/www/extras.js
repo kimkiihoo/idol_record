@@ -353,6 +353,8 @@
                 : ctx.empty('当天暂无记录'))
             : '<p class="subtle">点选日期查看当天摘要与关联活动。</p>') +
           '</div>',
+        false,
+        { key: 'calendar:' + month, restore: () => paint() },
       );
       ctx.on('#calendar-month', 'change', () => {
         const value = ctx.read('calendar-month');
@@ -443,6 +445,8 @@
             )
             .join('') +
           '</details><p class="subtle">消费与足迹按活动日期，成员按拍摄日期。首次互动依据现有全部历史记录计算。</p>',
+        false,
+        { key: 'annual:' + year, restore: () => paint() },
       );
       ctx.on('#review-year', 'change', () => {
         year = ctx.read('review-year');

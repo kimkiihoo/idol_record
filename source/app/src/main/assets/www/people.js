@@ -60,11 +60,21 @@
 
   function rowCard(ctx, row) {
     const C = ctx.C;
+    const isGroup = C.isGroupItem(row.item);
     const participants = C.participantIds(row.item);
-    const faces = participants.map(name => avatar(ctx, profileFor(ctx, name))).join('');
+    const itemTitle = C.itemName(row.item);
+    const faces = isGroup
+      ? avatar(ctx, C.groupProfile(ctx.state, itemTitle))
+      : participants.map(name => avatar(ctx, profileFor(ctx, name))).join('');
     const kind = C.kind(row.item);
-    const prefix = kind === 'multi' ? '多人特典 · ' : C.isGroupItem(row.item) ? (kind === 'phone' ? '团体 · ' : '团体特典 · ') : '';
-    return '<button class="interaction-card" data-interaction-event="' + ctx.esc(row.event.id) + '"><div class="row"><small>' + ctx.esc((row.date || '').slice(0, 10)) + '</small><strong>' + ctx.money(C.itemTotal(row.item)) + '</strong></div><div class="interaction-target">' + (faces ? '<div class="avatar-stack">' + faces + '</div>' : '') + '<strong>' + ctx.esc(C.itemName(row.item)) + '</strong></div><p>' + ctx.esc(prefix + C.benefitLabel(row.item,ctx.state,row.event)) + ' · ' + C.count(row.item) + ' 张</p><p>' + ctx.esc(row.event.event_name || '未命名活动') + '</p>' + (row.groups.length ? '<p>' + ctx.esc(row.groups.join(' / ')) + '</p>' : '') + (row.item.note ? '<p>' + ctx.esc(row.item.note) + '</p>' : '') + '</button>';
+    const benefitText = C.benefitLabel(row.item, ctx.state, row.event);
+    const prefix = kind === 'multi'
+      ? '多人特典 · '
+      : isGroup
+        ? (kind === 'phone' ? '团体 · ' : (/^(?:团体特典|\u56e2\u5207)/.test(benefitText) ? '' : '团体特典 · '))
+        : '';
+    const extraGroups = isGroup ? row.groups.filter(g => g !== itemTitle) : row.groups;
+    return '<button class="interaction-card" data-interaction-event="' + ctx.esc(row.event.id) + '"><div class="row"><small>' + ctx.esc((row.date || '').slice(0, 10)) + '</small><strong>' + ctx.money(C.itemTotal(row.item)) + '</strong></div><div class="interaction-target">' + (faces ? '<div class="avatar-stack">' + faces + '</div>' : '') + '<strong>' + ctx.esc(itemTitle) + '</strong></div><p>' + ctx.esc(prefix + benefitText) + ' · ' + C.count(row.item) + ' 张</p><p>' + ctx.esc(row.event.event_name || '未命名活动') + '</p>' + (extraGroups.length ? '<p>' + ctx.esc(extraGroups.join(' / ')) + '</p>' : '') + (row.item.note ? '<p>' + ctx.esc(row.item.note) + '</p>' : '') + '</button>';
   }
 
   function bindRows(ctx) {
@@ -110,15 +120,26 @@
       const results = () => {
         const range = ctx.range;
         const members = ctx.C.memberMetrics(ctx.state, { start:range.start,end:range.end,photosOnly:false,breakdown:true,kind:view.memberKind,sort:view.memberSort });
-        const filtered = members.filter(member => member.count > 0 && !profileFor(ctx,member.id).archived && ctx.C.search(Object.assign({},profileFor(ctx,member.id),member),view.query,root.IdolPinyin));
+        const filtered = members.filter(member => {
+          if (member.count <= 0) return false;
+          if (view.memberKind === 'group') {
+            const gp = ctx.C.groupProfile(ctx.state, member.name);
+            return ctx.C.search(Object.assign({}, gp, member), view.query, root.IdolPinyin);
+          }
+          const prof = profileFor(ctx, member.id);
+          return !prof.archived && ctx.C.search(Object.assign({}, prof, member), view.query, root.IdolPinyin);
+        });
         const unit = ' 张';
         document.querySelector('#member-scope-note').textContent = (range.start ? range.start + ' 至 ' + range.end : '全部历史') + ' · 拍立得特典张数 · 多人特典金额按参与人数均摊';
         document.querySelector('#member-results').innerHTML = filtered.slice(0,view.memberLimit).map((member,index) => {
-          const profile=profileFor(ctx,member.id);
+          const isGroup = view.memberKind === 'group';
+          const profile = isGroup ? null : profileFor(ctx,member.id);
+          const groupProf = isGroup ? ctx.C.groupProfile(ctx.state, member.name) : null;
           const lastDay=(member.last_date||'').slice(0,10);
           const main=view.memberSort === 'cost'?ctx.money(member.cost):view.memberSort === 'latest'?(lastDay||'暂无拍切'):member.count+unit;
-          const rowAvatar = view.memberKind === 'individual' ? avatar(ctx,profile) : avatar(ctx, ctx.C.groupProfile(ctx.state, member.name));
-          return '<button class="profile-row member-ranking" data-member-profile="' + ctx.esc(member.name) + '" data-member-id="'+ctx.esc(member.id)+'"><span class="rank-index">' + (index+1) + '</span>' + rowAvatar + '<span class="member-identity"><strong>' + ctx.esc(view.memberKind==='individual'?ctx.C.memberLabel(profile,ctx.state):member.name) + '</strong><small>' + ctx.esc(profile.groups.join(' / ')) + '</small><small>最近 ' + ctx.esc(lastDay||'暂无记录') + '</small></span><span class="member-numbers"><strong>' + ctx.esc(main) + '</strong><small>' + (view.memberSort === 'cost'?member.count+unit:ctx.money(member.cost)) + '</small></span></button>';
+          const rowAvatar = isGroup ? avatar(ctx, groupProf) : avatar(ctx, profile);
+          const subLine = isGroup ? (groupProf.organizers || []).join(' / ') : profile.groups.join(' / ');
+          return '<button class="profile-row member-ranking" data-member-profile="' + ctx.esc(member.name) + '" data-member-id="'+ctx.esc(member.id)+'"><span class="rank-index">' + (index+1) + '</span>' + rowAvatar + '<span class="member-identity"><strong>' + ctx.esc(isGroup?member.name:ctx.C.memberLabel(profile,ctx.state)) + '</strong><small>' + ctx.esc(subLine) + '</small><small>最近 ' + ctx.esc(lastDay||'暂无记录') + '</small></span><span class="member-numbers"><strong>' + ctx.esc(main) + '</strong><small>' + (view.memberSort === 'cost'?member.count+unit:ctx.money(member.cost)) + '</small></span></button>';
         }).join('') + (filtered.length?'':ctx.empty('暂无匹配的成员记录')) + (filtered.length>view.memberLimit?'<button id="more-members" class="outline">再显示 30 位</button>':'');
         ctx.allOn('[data-member-profile]','click',element => {
           const target=Object.assign({},ctx,{range});
@@ -138,7 +159,7 @@
         const rows=ctx.C.interactionRows(ctx.state,{group:name,start:ctx.range.start,end:ctx.range.end});
         const events=ctx.C.filterRecords(ctx.state.records,{start:ctx.range.start,end:ctx.range.end}).filter(event=>ctx.C.names(event.performing_groups).includes(name));
         return {name, count:rows.length, cost:rows.reduce((sum,row)=>sum+ctx.C.itemTotal(row.item),0), events:events.length};
-      }).filter(group=>group.count>0).sort((a,b)=>b.count-a.count||a.name.localeCompare(b.name,'zh'));
+      }).filter(group=>group.count>0).sort((a,b)=>b.count-a.count||b.cost-a.cost||a.name.localeCompare(b.name,'zh'));
       document.querySelector('#group-results').innerHTML=groups.map(group=>
         '<button class="profile-row" data-group-profile="'+ctx.esc(group.name)+'">'+avatar(ctx,ctx.C.groupProfile(ctx.state,group.name))+'<span><strong>'+ctx.esc(group.name)+'</strong><small>'+group.count+' 条互动 · '+ctx.money(group.cost)+' · '+group.events+' 场参演活动</small></span><span>›</span></button>'
       ).join('')||ctx.empty('暂无匹配的团体');
@@ -155,7 +176,7 @@
     function paint() {
       const rows = ctx.C.interactionRows(ctx.state, Object.assign({ start: ctx.range.start, end: ctx.range.end, order }, options));
       const cost = rows.reduce((sum, row) => sum + ctx.C.itemTotal(row.item), 0);
-      ctx.modal(title, (profileHtml || '') + '<p class="subtle">' + ctx.esc(ctx.range.label || '全部历史') + (options.dateBasis === 'activity' ? ' · 按活动日期' : ' · 按拍摄日期') + ' · ' + rows.length + ' 条互动 · 关联记录金额 ' + ctx.money(cost) + '</p>' + ctx.select('时间顺序', 'history-order', { latest: '最新拍摄在前', oldest: '最早拍摄在前' }, order) + '<div id="person-history">' + rows.slice(0, limit).map(row => rowCard(ctx, row)).join('') + '</div>' + (rows.length ? '' : ctx.empty('本时段暂无互动记录')) + (rows.length > limit ? '<button id="more-history" class="outline">再显示 30 条</button>' : ''));
+      ctx.modal(title, (profileHtml || '') + '<p class="subtle">' + ctx.esc(ctx.range.label || '全部历史') + (options.dateBasis === 'activity' ? ' · 按活动日期' : ' · 按拍摄日期') + ' · ' + rows.length + ' 条互动' + (options.hideCost ? '' : ' · 关联记录金额 ' + ctx.money(cost)) + '</p>' + ctx.select('时间顺序', 'history-order', { latest: '最新拍摄在前', oldest: '最早拍摄在前' }, order) + '<div id="person-history">' + rows.slice(0, limit).map(row => rowCard(ctx, row)).join('') + '</div>' + (rows.length ? '' : ctx.empty('本时段暂无互动记录')) + (rows.length > limit ? '<button id="more-history" class="outline">再显示 30 条</button>' : ''), false, options.navMeta);
       bindRows(ctx);
       ctx.on('#history-order', 'change', event => { order = event.target.value; paint(); });
       ctx.on('#more-history', 'click', () => { limit += 30; paint(); });
@@ -185,23 +206,58 @@
     const nextMilestone=Math.max(100,Math.floor(totalTickets/100+1)*100);
     const firstMetDate=profile.first_met||(allTime.first||'').slice(0,10);
     const firstMet=firstMetDate||'暂无';
-    const html='<div class="profile-heading">'+avatar(ctx,profile)+'<div><h2>'+ctx.esc(profile.name)+'</h2><p>'+ctx.esc(profile.groups.join(' / ')||'未设置团体')+'</p></div></div>'+
+    const groupChips = profile.groups.length
+      ? '<div class="chips" style="margin:6px 0 0">' + profile.groups.map((g, idx) => '<button type="button" class="organizer-chip" data-member-group="' + idx + '">' + avatar(ctx, ctx.C.groupProfile(ctx.state, g), 'sm') + '<span>' + ctx.esc(g) + ' ›</span></button>').join('') + '</div>'
+      : '<p>未设置团体</p>';
+    const html='<div class="profile-heading">'+avatar(ctx,profile)+'<div><h2>'+ctx.esc(profile.name)+'</h2>'+groupChips+'</div></div>'+
       '<div class="actions member-actions"><button id="edit-profile" class="outline">编辑资料</button><button id="quick-member" class="primary">＋ 补记互动</button></div>'+
       metaCard+
       '<div class="card">'+ctx.detailLine('累计特典',summary.count+' 张')+(summary.phoneCount?ctx.detailLine('手机合影',summary.phoneCount+' 张'):'')+ctx.detailLine('初识天数',daysSince(firstMetDate))+ctx.detailLine('初次见面',firstMet)+ctx.detailLine('最近互动',(summary.latest||'').slice(0,10)||'暂无')+(nextMilestone?ctx.detailLine(nextMilestone===100?'距离百切':'距离'+nextMilestone+'切',(nextMilestone-totalTickets)+' 张'):'')+'</div>'+
       (summary.forms.length?'<details class="member-details"><summary>特典分类</summary>'+summary.forms.map(row=>ctx.detailLine(row.name,row.count+' 张')).join('')+'</details>':'')+
       (summary.months.length?'<details class="member-details"><summary>互动趋势 · 按拍摄月份</summary>'+summary.months.map(row=>ctx.detailLine(row.name,row.count+' 张')).join('')+'</details>':'')+
       (profile.note?'<p class="notice" style="margin-top:12px">'+ctx.esc(profile.note)+'</p>':'')+'<p class="subtle">距离百切按全部时间特典券累计计算，以下每条互动显示该条实付金额。</p>';
-    history(ctx,profile.name+' · 互动记录',{member:profile.id,dateBasis},html);
+    history(ctx,profile.name+' · 互动记录',{
+      member:profile.id,
+      dateBasis,
+      navMeta:{key:'member:'+profile.id,restore:()=>showMember(ctx.fresh?ctx.fresh():ctx,profile.id,dateBasis)},
+      onPaint:()=>{
+        ctx.allOn('[data-member-group]','click',btn=>{
+          const g=profile.groups[Number(btn.dataset.memberGroup)];
+          if(g)showGroup(ctx,g,dateBasis);
+        });
+      }
+    },html);
+  }
+  function entitySortMaps(ctx) {
+    const spend = typeof ctx.C.entitySpendingSummary === 'function'
+      ? ctx.C.entitySpendingSummary(ctx.state, ctx.state.records)
+      : { members: [], groups: [], organizers: [] };
+    const metricMap = new Map(ctx.C.memberMetrics(ctx.state, {}).map(m => [m.id, m]));
+    const memberSpend = new Map(spend.members.map(r => [r.id, r]));
+    const groupSpend = new Map(spend.groups.map(r => [r.id, r]));
+    const orgSpend = new Map(spend.organizers.map(r => [r.id, r]));
+    return { metricMap, memberSpend, groupSpend, orgSpend };
   }
   function manageMembers(ctx) {
     let query = '', limit = 30;
-    ctx.modal('成员档案管理', '<div class="row"><input id="manage-query" autocomplete="off" placeholder="搜索姓名、曾用名或团体"><button id="manage-create" class="primary compact">新建成员</button></div><p class="subtle">包含未记账与已归档成员。</p><div id="managed-members"></div>');
+    const { metricMap, memberSpend } = entitySortMaps(ctx);
+    ctx.modal('成员档案管理', '<div class="row"><input id="manage-query" autocomplete="off" placeholder="搜索姓名、曾用名或团体"><button id="manage-create" class="primary compact">新建成员</button></div><p class="subtle">按互动次数与花费排序，包含未记账与已归档成员。</p><div id="managed-members"></div>', false, { key: 'mgr:members', restore: () => manageMembers(ctx.fresh ? ctx.fresh() : ctx) });
     function results() {
-      const profiles = ctx.C.memberCatalog(ctx.state).filter(profile => ctx.C.search(profile, query, root.IdolPinyin));
-      document.querySelector('#managed-members').innerHTML = profiles.slice(0, limit).map(profile =>
-        '<button class="profile-row" data-manage-member="' + ctx.esc(profile.id) + '">' + avatar(ctx, profile) + '<span><strong>' + ctx.esc(ctx.C.memberLabel(profile,ctx.state)) + '</strong><small>' + ctx.esc(profile.groups.join(' / ') || '未设置团体') + (profile.archived ? ' · 已归档' : '') + '</small></span><span>编辑 ›</span></button>'
-      ).join('') + (profiles.length ? '' : ctx.empty('暂无匹配的成员')) + (profiles.length > limit ? '<button id="manage-more" class="outline">再显示 30 位</button>' : '');
+      const profiles = ctx.C.memberCatalog(ctx.state).filter(profile => ctx.C.search(profile, query, root.IdolPinyin)).sort((a, b) => {
+        const msA = memberSpend.get(a.id) || { count: 0, cost: 0 }, msB = memberSpend.get(b.id) || { count: 0, cost: 0 };
+        const mmA = metricMap.get(a.id) || { count: 0, phone_count: 0, cost: 0, last_date: '' }, mmB = metricMap.get(b.id) || { count: 0, phone_count: 0, cost: 0, last_date: '' };
+        const countA = msA.count || (mmA.count + mmA.phone_count), countB = msB.count || (mmB.count + mmB.phone_count);
+        const costA = msA.cost || mmA.cost, costB = msB.cost || mmB.cost;
+        return countB - countA || costB - costA || String(mmB.last_date || '').localeCompare(String(mmA.last_date || '')) || ctx.C.memberLabel(a, ctx.state).localeCompare(ctx.C.memberLabel(b, ctx.state), 'zh');
+      });
+      document.querySelector('#managed-members').innerHTML = profiles.slice(0, limit).map(profile => {
+        const ms = memberSpend.get(profile.id) || { count: 0, cost: 0 };
+        const mm = metricMap.get(profile.id) || { count: 0, phone_count: 0, cost: 0 };
+        const cnt = ms.count || (mm.count + mm.phone_count);
+        const cst = ms.cost || mm.cost;
+        const meta = [profile.groups.join(' / ') || '未设置团体', cnt ? cnt + ' 次 · ' + ctx.money(cst) : '', profile.archived ? '已归档' : ''].filter(Boolean).join(' · ');
+        return '<button class="profile-row" data-manage-member="' + ctx.esc(profile.id) + '">' + avatar(ctx, profile) + '<span><strong>' + ctx.esc(ctx.C.memberLabel(profile,ctx.state)) + '</strong><small>' + ctx.esc(meta) + '</small></span><span>编辑 ›</span></button>';
+      }).join('') + (profiles.length ? '' : ctx.empty('暂无匹配的成员')) + (profiles.length > limit ? '<button id="manage-more" class="outline">再显示 30 位</button>' : '');
       ctx.allOn('[data-manage-member]', 'click', button => editProfile(ctx, button.dataset.manageMember, true));
       ctx.on('#manage-more', 'click', () => { limit += 30; results(); });
     }
@@ -304,7 +360,11 @@
     });
   }
   function batchAssignGroups(ctx, organizerName) {
-    const catalog = ctx.C.groupCatalog(ctx.state);
+    const { groupSpend } = entitySortMaps(ctx);
+    const catalog = ctx.C.groupCatalog(ctx.state).slice().sort((a, b) => {
+      const ga = groupSpend.get(a) || { count: 0, cost: 0 }, gb = groupSpend.get(b) || { count: 0, cost: 0 };
+      return gb.count - ga.count || gb.cost - ga.cost || a.localeCompare(b, 'zh');
+    });
     const current = catalog.filter(name => (ctx.C.groupProfile(ctx.state, name).organizers || []).includes(organizerName));
     batchChecklistModal(ctx, {
       title: '批量添加旗下团体 · ' + organizerName,
@@ -396,6 +456,8 @@
           ? '<button id="organizer-view-records" class="outline">在记录页查看全部 (' + events.length + ')</button>'
           : (!groups.length ? '<button id="remove-unused-organizer" class="danger">移除未使用预设</button>' : '')) +
         '</div>',
+      false,
+      { key: 'organizer:' + name, restore: () => showOrganizer(ctx.fresh ? ctx.fresh() : ctx, name) },
     );
     ctx.on('#edit-organizer-profile', 'click', () => editOrganizer(ctx, name, c => showOrganizer(c, name)));
     ctx.on('#organizer-batch-groups', 'click', () => batchAssignGroups(ctx, name));
@@ -424,6 +486,7 @@
   }
   function manageOrganizers(ctx) {
     let query = '', limit = 30;
+    const { orgSpend } = entitySortMaps(ctx);
     const eventCounts = new Map();
     const groupCounts = new Map();
     for (const event of ctx.state.records) {
@@ -437,16 +500,24 @@
     ctx.modal(
       '事务所管理',
       '<div class="row"><input id="organizer-query" autocomplete="off" placeholder="搜索事务所名称或拼音"><button id="organizer-create" class="primary compact">＋ 新建</button></div>' +
-        '<p class="subtle">支持设置头像与备注、批量关联旗下团体与演出，或一键更名同步全部历史记录。</p>' +
+        '<p class="subtle">按互动与主办次数及花费排序，支持设置头像备注与批量关联。</p>' +
         '<div id="managed-organizers"></div>',
+      false,
+      { key: 'mgr:organizers', restore: () => manageOrganizers(ctx.fresh ? ctx.fresh() : ctx) },
     );
     function results() {
-      const catalog = ctx.C.organizerCatalog(ctx.state).filter(name => ctx.C.search({ name }, query, root.IdolPinyin));
+      const catalog = ctx.C.organizerCatalog(ctx.state).filter(name => ctx.C.search({ name }, query, root.IdolPinyin)).sort((a, b) => {
+        const oa = orgSpend.get(a) || { count: 0, cost: 0 }, ob = orgSpend.get(b) || { count: 0, cost: 0 };
+        const evA = eventCounts.get(a) || 0, evB = eventCounts.get(b) || 0;
+        const gpA = groupCounts.get(a) || 0, gpB = groupCounts.get(b) || 0;
+        return ob.count - oa.count || evB - evA || ob.cost - oa.cost || gpB - gpA || a.localeCompare(b, 'zh');
+      });
       document.querySelector('#managed-organizers').innerHTML =
         catalog.slice(0, limit).map((name, index) => {
           const evCount = eventCounts.get(name) || 0;
           const gpCount = groupCounts.get(name) || 0;
-          const desc = [gpCount ? gpCount + ' 个旗下团体' : '', evCount ? evCount + ' 场活动' : ''].filter(Boolean).join(' · ') || '预设事务所 · 暂未关联';
+          const os = orgSpend.get(name) || { count: 0, cost: 0 };
+          const desc = [gpCount ? gpCount + ' 个旗下团体' : '', evCount ? evCount + ' 场主办' : '', os.cost ? ctx.money(os.cost) : ''].filter(Boolean).join(' · ') || '预设事务所 · 暂未关联';
           return (
             '<button class="profile-row" data-manage-organizer="' +
             index +
@@ -525,6 +596,7 @@
   }
   function manageGroups(ctx) {
     let query = '', limit = 30;
+    const { groupSpend } = entitySortMaps(ctx);
     const memberCounts = new Map();
     for (const member of ctx.C.memberCatalog(ctx.state)) {
       for (const g of member.groups || []) memberCounts.set(g, (memberCounts.get(g) || 0) + 1);
@@ -532,17 +604,25 @@
     ctx.modal(
       '团体管理',
       '<div class="row"><input id="group-manage-query" autocomplete="off" placeholder="搜索团体名称或拼音"><button id="group-manage-create" class="primary compact">＋ 新建</button></div>' +
-        '<p class="subtle">支持设置团体头像、归属事务所与备注，或一键更名同步全部关联记录。</p>' +
+        '<p class="subtle">按互动次数与花费排序，支持设置头像、归属事务所与备注。</p>' +
         '<div id="managed-groups"></div>',
+      false,
+      { key: 'mgr:groups', restore: () => manageGroups(ctx.fresh ? ctx.fresh() : ctx) },
     );
     function results() {
-      const catalog = ctx.C.groupCatalog(ctx.state).filter(name => ctx.C.search({ name }, query, root.IdolPinyin));
+      const catalog = ctx.C.groupCatalog(ctx.state).filter(name => ctx.C.search({ name }, query, root.IdolPinyin)).sort((a, b) => {
+        const ga = groupSpend.get(a) || { count: 0, cost: 0 }, gb = groupSpend.get(b) || { count: 0, cost: 0 };
+        const ma = memberCounts.get(a) || 0, mb = memberCounts.get(b) || 0;
+        return gb.count - ga.count || gb.cost - ga.cost || mb - ma || a.localeCompare(b, 'zh');
+      });
       document.querySelector('#managed-groups').innerHTML =
         catalog.slice(0, limit).map((name, index) => {
           const gp = ctx.C.groupProfile(ctx.state, name);
           const members = memberCounts.get(name) || 0;
+          const gs = groupSpend.get(name) || { count: 0, cost: 0 };
           const meta = [
             (gp.organizers || []).length ? '所属：' + gp.organizers.join(' / ') : '',
+            gs.count ? gs.count + ' 次 · ' + ctx.money(gs.cost) : '',
             members ? members + ' 位成员' : '',
           ].filter(Boolean).join(' · ') || '暂未关联成员或事务所';
           return '<button class="profile-row" data-manage-group="' + index + '">' + avatar(ctx, gp) + '<span><strong>' + ctx.esc(name) + '</strong><small>' + ctx.esc(meta) + '</small></span><span>详情 ›</span></button>';
@@ -576,15 +656,35 @@
       (profile.note?'<p class="notice" style="margin-bottom:12px">'+ctx.esc(profile.note)+'</p>':'');
     const lineup=events.length?'<details class="group-performances"><summary>参演活动 '+events.length+' 场</summary>'+events.map(event=>'<button class="interaction-card" data-interaction-event="'+ctx.esc(event.id)+'">'+ctx.esc(event.date+' · '+event.event_name)+'</button>').join('')+'</details>':'';
     const summary=ctx.C.groupSummary(ctx.state,name,{start:ctx.range.start,end:ctx.range.end,dateBasis});
-    const distribution='<div class="card">'+ctx.detailLine('总花费',ctx.money(summary.shared))+'</div><details class="member-details"><summary>成员互动分布</summary>'+summary.members.map(member=>ctx.detailLine(ctx.C.memberLabel(ctx.C.resolveMember(ctx.state,member.id),ctx.state),member.count+' 张 · '+ctx.money(member.cost))).join('')+'</details>';
+    const distRows=[];
+    for(const member of summary.members){
+      const prof=ctx.C.resolveMember(ctx.state,member.id);
+      const parts=[];
+      if(member.chekiCount)parts.push('拍立得 '+member.chekiCount+' 张');
+      if(member.phoneCount)parts.push('手机合影 '+member.phoneCount+' 张');
+      if(!parts.length&&member.count)parts.push(member.count+' 张');
+      distRows.push('<button type="button" class="member-dist-row" data-dist-member="'+ctx.esc(member.id)+'"><span class="member-dist-left">'+avatar(ctx,prof,'sm')+'<strong>'+ctx.esc(ctx.C.memberLabel(prof,ctx.state))+'</strong></span><span class="member-dist-right"><strong>'+ctx.money(member.cost)+' ›</strong><small>'+ctx.esc(parts.join(' · '))+'</small></span></button>');
+    }
+    if(summary.groupCheki&&summary.groupCheki.count>0){
+      distRows.push('<div class="member-dist-row static"><span class="member-dist-left">'+avatar(ctx,profile,'sm')+'<strong>团体特典</strong></span><span class="member-dist-right"><strong>'+ctx.money(summary.groupCheki.cost)+'</strong><small>拍立得 '+summary.groupCheki.count+' 张</small></span></div>');
+    }
+    if(summary.groupPhone&&summary.groupPhone.count>0){
+      distRows.push('<div class="member-dist-row static"><span class="member-dist-left">'+avatar(ctx,profile,'sm')+'<strong>团体手机合影</strong></span><span class="member-dist-right"><strong>'+ctx.money(summary.groupPhone.cost)+'</strong><small>手机合影 '+summary.groupPhone.count+' 张</small></span></div>');
+    }
+    const distribution='<div class="card">'+ctx.detailLine('总花费',ctx.money(summary.shared))+'</div><details class="member-details"><summary>成员互动分布</summary>'+(distRows.length?'<div class="member-dist-list">'+distRows.join('')+'</div>':'<p class="subtle">本时段暂无互动分布</p>')+'</details>';
     history(ctx, name + ' · 团体', {
       group: name,
       dateBasis,
+      hideCost: true,
+      navMeta: { key: 'group:' + name, restore: () => showGroup(ctx.fresh ? ctx.fresh() : ctx, name, dateBasis) },
       onPaint: () => {
         ctx.on('#edit-group-profile', 'click', () => editGroup(ctx, name, c => showGroup(c, name, dateBasis)));
         ctx.allOn('[data-group-organizer]', 'click', btn => {
           const org = (profile.organizers || [])[Number(btn.dataset.groupOrganizer)];
           if (org) showOrganizer(ctx, org);
+        });
+        ctx.allOn('[data-dist-member]', 'click', btn => {
+          if (btn.dataset.distMember) showMember(ctx, btn.dataset.distMember, dateBasis);
         });
       },
     }, heading + lineup + distribution + '<p class="subtle">同一条互动在本团体中只计一次，跨团合影可同时出现在多个团体中。</p>');

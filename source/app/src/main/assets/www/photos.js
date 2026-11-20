@@ -13,8 +13,39 @@
       /^data:video\//i.test(photoOrSrc)
     );
   }
+  function videoPosterUrl(src) {
+    if (typeof src === 'string' && root.AndroidBridge && src.startsWith('https://idol.local/photos/')) {
+      return 'https://idol.local/thumbs/' + src.slice('https://idol.local/photos/'.length) + '.jpg';
+    }
+    return '';
+  }
+  function bindNativeVideoFallback(selector, src, title) {
+    const el = document.querySelector(selector);
+    if (!el || typeof el.addEventListener !== 'function') return;
+    el.addEventListener('error', () => {
+      if (!root.AndroidBridge || typeof root.AndroidBridge.playVideo !== 'function') return;
+      const poster = videoPosterUrl(src);
+      const wrap = document.createElement('button');
+      wrap.type = 'button';
+      wrap.className = 'outline';
+      wrap.style.width = '100%';
+      wrap.style.margin = '12px 0';
+      wrap.innerHTML = (poster ? '<img class="photo-preview" src="' + poster.replace(/"/g, '&quot;') + '" alt="视频封面">' : '') +
+        '<span>该编码需使用原生引擎播放 · 点击播放 ▶</span>';
+      wrap.addEventListener('click', () => root.AndroidBridge.playVideo(src, title || ''));
+      if (el.parentNode) el.parentNode.replaceChild(wrap, el);
+    });
+  }
   function thumbVisual(ctx, photo, altText) {
     if (isVideo(photo)) {
+      const poster = videoPosterUrl(photo.data);
+      if (poster) {
+        return '<div class="video-thumb-wrap"><img class="media-thumb" loading="lazy" src="' +
+          ctx.esc(poster) +
+          '" alt="' +
+          ctx.esc(photo.caption || '记录视频') +
+          '"><span class="video-badge">▶ 视频</span></div>';
+      }
       return '<div class="video-thumb-wrap"><video class="media-thumb" muted playsinline preload="metadata" src="' +
         ctx.esc(photo.data) +
         '#t=0.1"></video><span class="video-badge">▶ 视频</span></div>';
@@ -267,11 +298,16 @@
     const box = document.querySelector('#photo-lightbox');
     if (!box || !src) return;
     if (isVideo(src)) {
+      const hasNative = !!(root.AndroidBridge && typeof root.AndroidBridge.playVideo === 'function');
+      const poster = videoPosterUrl(src);
       box.innerHTML =
         '<div class="lightbox-bar"><div class="lightbox-tools">' +
+        (hasNative ? '<button type="button" id="lightbox-native-play">原生播放</button>' : '') +
         '<button type="button" id="lightbox-save" class="primary">保存到相册</button>' +
         '</div><button type="button" id="lightbox-close" class="icon" aria-label="关闭全屏">×</button></div>' +
-        '<div id="lightbox-stage" class="lightbox-stage lightbox-stage-video"><video id="lightbox-video" class="lightbox-video" controls playsinline autoplay src="' +
+        '<div id="lightbox-stage" class="lightbox-stage lightbox-stage-video"><video id="lightbox-video" class="lightbox-video" controls playsinline autoplay' +
+        (poster ? ' poster="' + ctx.esc(poster) + '"' : '') +
+        ' src="' +
         ctx.esc(src) +
         '"></video></div>' +
         (caption ? '<div class="lightbox-caption">' + ctx.esc(caption) + '</div>' : '');
@@ -279,6 +315,8 @@
       document.body.style.overflow = 'hidden';
       ctx.on('#lightbox-close', 'click', closeLightbox);
       ctx.on('#lightbox-save', 'click', () => savePhoto(ctx, src));
+      if (hasNative) ctx.on('#lightbox-native-play', 'click', () => root.AndroidBridge.playVideo(src, caption || '视频播放'));
+      bindNativeVideoFallback('#lightbox-video', src, caption || '视频播放');
       return;
     }
     box.innerHTML =
@@ -406,22 +444,27 @@
     apply();
   }
   function bindGallery(ctx, photos, prefix, back) {
+    if (!photos || !photos.length) return;
     ctx.allOn('[data-photo-view]', 'click', (button) => {
       if (!button.dataset.photoView.startsWith(prefix + '-')) return;
       const index = Number(button.dataset.photoView.slice(prefix.length + 1)),
         photo = photos[index];
       if (!photo) return;
       const video = isVideo(photo);
+      const hasNative = !!(video && root.AndroidBridge && typeof root.AndroidBridge.playVideo === 'function');
+      const poster = video ? videoPosterUrl(photo.data) : '';
       ctx.modal(
         video ? '视频预览' : '照片预览',
         (video
-          ? '<video id="gallery-preview-video" class="photo-preview" controls playsinline preload="metadata" src="' + ctx.esc(photo.data) + '"></video>'
+          ? '<video id="gallery-preview-video" class="photo-preview" controls playsinline preload="metadata"' + (poster ? ' poster="' + ctx.esc(poster) + '"' : '') + ' src="' + ctx.esc(photo.data) + '"></video>'
           : '<img id="gallery-preview-img" class="photo-preview clickable" src="' + ctx.esc(photo.data) + '" alt="' + ctx.esc(photo.caption || '照片') + '">') +
           (photo.caption ? '<p>' + ctx.esc(photo.caption) + '</p>' : '') +
-          '<div class="actions"><button id="preview-fullscreen" class="outline">' + (video ? '全屏播放' : '全屏 / 放大') + '</button><button id="preview-save-photo" class="primary">保存到相册</button></div>' +
+          '<div class="actions"><button id="preview-fullscreen" class="outline">' + (video ? '全屏播放' : '全屏 / 放大') + '</button>' + (hasNative ? '<button id="preview-native-play" class="outline">原生播放</button>' : '') + '<button id="preview-save-photo" class="primary">保存到相册</button></div>' +
           '<button id="photo-back" class="outline" style="width:100%;margin-top:8px">返回记录</button>',
       );
       if (!video) ctx.on('#gallery-preview-img', 'click', () => openLightbox(ctx, photo.data, photo.caption || ''));
+      else bindNativeVideoFallback('#gallery-preview-video', photo.data, photo.caption || '视频播放');
+      if (hasNative) ctx.on('#preview-native-play', 'click', () => root.AndroidBridge.playVideo(photo.data, photo.caption || '视频播放'));
       ctx.on('#preview-fullscreen', 'click', () => openLightbox(ctx, photo.data, photo.caption || ''));
       ctx.on('#preview-save-photo', 'click', () => savePhoto(ctx, photo.data));
       ctx.on('#photo-back', 'click', back);
@@ -431,8 +474,11 @@
   function albumRows(state){
     const rows=[];
     for(const event of state.records){
-      for(const photo of event.attachments||[])rows.push({photo,event,item:null,category:event.standalone_phone?'phone':'event',date:event.date,members:[],groups:root.IdolCore.names(event.performing_groups)});
-      for(const item of (event.interactions||[]).filter(item=>root.IdolCore.kind(item)!=='merch'))for(const photo of item.attachments||[])rows.push({photo,event,item,category:root.IdolCore.kind(item)==='phone'?'phone':'cheki',date:item.shot_at||event.date,members:root.IdolCore.participantIds(item),groups:root.IdolCore.interactionGroups(item,state,event)});
+      for(const photo of event.attachments||[])rows.push({photo,event,item:null,category:event.standalone_phone?'phone':'event',date:String(event.date||'').slice(0,10),members:[],groups:root.IdolCore.names(event.performing_groups)});
+      for(const item of (event.interactions||[]).filter(item=>root.IdolCore.kind(item)!=='merch')){
+        const rawDate=(event.standalone_phone&&(event.interactions||[]).length===1)?(event.date||item.shot_at||''):(item.shot_at||event.date||'');
+        for(const photo of item.attachments||[])rows.push({photo,event,item,category:root.IdolCore.kind(item)==='phone'?'phone':'cheki',date:String(rawDate).slice(0,10),members:root.IdolCore.participantIds(item),groups:root.IdolCore.interactionGroups(item,state,event)});
+      }
     }
     return rows.sort((a,b)=>b.date.localeCompare(a.date)||String(b.photo.id).localeCompare(String(a.photo.id)));
   }
@@ -443,8 +489,41 @@
     function results(){
       const rows=albumRows(ctx.state).filter(row=>(albumView.category==='all'||row.category===albumView.category)&&ctx.C.search({event:row.event.event_name,note:row.item&&row.item.note,caption:row.photo.caption,group:row.item&&row.item.group_name,groups:row.groups,members:row.members.map(id=>ctx.C.resolveMember(ctx.state,id))},albumView.query,root.IdolPinyin));
       const videoCount=rows.filter(row=>isVideo(row.photo)).length;
-      document.querySelector('#album-results').innerHTML='<p class="subtle">'+(videoCount?rows.length+' 项媒体（含 '+videoCount+' 个视频）':rows.length+' 张照片')+' · 时间由近到远</p><div class="photo-grid">'+rows.slice(0,albumView.limit).map((row,index)=>'<button class="album-card" data-album-photo="'+index+'">'+thumbVisual(ctx,row.photo,'记录照片')+'<strong>'+ctx.esc(row.item?ctx.C.itemName(row.item):row.event.event_name)+'</strong><small>'+ctx.esc(row.date.slice(0,10))+'</small><small>'+ctx.esc(row.event.standalone_phone?'独立手机合影':row.event.event_name)+'</small></button>').join('')+'</div>'+(rows.length?'':ctx.empty('暂无匹配的媒体，可添加手机合影或在原记录中添加照片'))+(rows.length>albumView.limit?'<button id="album-more" class="outline" style="width:100%">再显示 30 项</button>':'');
-      ctx.allOn('[data-album-photo]','click',button=>{const row=rows[Number(button.dataset.albumPhoto)];const video=isVideo(row.photo);const targetLine=row.members.length?ctx.detailLine('成员',row.members.map(id=>ctx.C.memberLabel(ctx.C.resolveMember(ctx.state,id),ctx.state)).join(' / ')):row.item&&ctx.C.isGroupItem(row.item)?ctx.detailLine('团体',row.item.group_name||'未知团体'):ctx.detailLine('成员','活动照片');const lightboxCaption=row.photo.caption||(row.item?ctx.C.itemName(row.item):row.event.event_name);ctx.modal(video?'视频详情':'照片详情',(video?'<video id="album-preview-video" class="photo-preview" controls playsinline preload="metadata" src="'+ctx.esc(row.photo.data)+'"></video>':'<img id="album-preview-img" class="photo-preview clickable" src="'+ctx.esc(row.photo.data)+'" alt="照片预览">')+ctx.detailLine('日期',row.date.slice(0,10))+targetLine+ctx.detailLine('所属活动',row.event.standalone_phone?'未绑定具体活动':row.event.event_name)+(row.photo.caption?'<p>'+ctx.esc(row.photo.caption)+'</p>':'')+'<div class="actions"><button id="album-fullscreen" class="outline">'+(video?'全屏播放':'全屏 / 放大')+'</button><button id="album-save-photo" class="primary">保存到相册</button></div><div class="actions"><button id="album-open-record" class="outline">查看原记录</button>'+(row.item&&ctx.C.kind(row.item)==='phone'?'<button id="album-edit-phone" class="primary">编辑手机合影</button>':'')+'</div>');if(!video)ctx.on('#album-preview-img','click',()=>openLightbox(ctx,row.photo.data,lightboxCaption));ctx.on('#album-fullscreen','click',()=>openLightbox(ctx,row.photo.data,lightboxCaption));ctx.on('#album-save-photo','click',()=>savePhoto(ctx,row.photo.data));ctx.on('#album-open-record','click',()=>ctx.onEvent(row.event.id));ctx.on('#album-edit-phone','click',()=>ctx.onEditItem(row.event.id,row.event.interactions.indexOf(row.item),null,'phone'));});
+      document.querySelector('#album-results').innerHTML='<p class="subtle">'+(videoCount?rows.length+' 项媒体（含 '+videoCount+' 个视频）':rows.length+' 张照片')+' · 时间由近到远</p><div class="photo-grid">'+rows.slice(0,albumView.limit).map((row,index)=>'<button class="album-card" data-album-photo="'+index+'">'+thumbVisual(ctx,row.photo,'记录照片')+'<strong>'+ctx.esc(row.item?ctx.C.itemName(row.item):row.event.event_name)+'</strong><small>'+ctx.esc(row.date.slice(0,10))+'</small><small>'+ctx.esc(row.event.standalone_phone?'独立手机合影':row.item?row.event.event_name:'演出合影')+'</small></button>').join('')+'</div>'+(rows.length?'':ctx.empty('暂无匹配的媒体，可添加手机合影或在原记录中添加照片'))+(rows.length>albumView.limit?'<button id="album-more" class="outline" style="width:100%">再显示 30 项</button>':'');
+      function openAlbumDetail(row){
+        const liveCtx=ctx.fresh?ctx.fresh():ctx;
+        const video=isVideo(row.photo);
+        const hasNative=!!(video&&root.AndroidBridge&&typeof root.AndroidBridge.playVideo==='function');
+        const poster=video?videoPosterUrl(row.photo.data):'';
+        const hasAv=!!(root.IdolPeople&&typeof root.IdolPeople.avatar==='function');
+        let targetLine='';
+        if(row.members.length){
+          targetLine='<div class="detail-line detail-line-chips"><span>成员</span><div class="chips event-org-chips">'+row.members.map(id=>{
+            const prof=liveCtx.C.resolveMember(liveCtx.state,id);
+            return '<button type="button" class="organizer-chip" data-album-member="'+liveCtx.esc(id)+'">'+(hasAv?root.IdolPeople.avatar(liveCtx,prof,'sm'):'')+'<span>'+liveCtx.esc(liveCtx.C.memberLabel(prof,liveCtx.state))+'</span></button>';
+          }).join('')+'</div></div>';
+        }else if(row.item&&liveCtx.C.isGroupItem(row.item)){
+          const gName=row.item.group_name||'未知团体';
+          targetLine='<div class="detail-line detail-line-chips"><span>团体</span><div class="chips event-org-chips"><button type="button" class="organizer-chip" data-album-group="'+liveCtx.esc(gName)+'">'+(hasAv?root.IdolPeople.avatar(liveCtx,liveCtx.C.groupProfile(liveCtx.state,gName),'sm'):'')+'<span>'+liveCtx.esc(gName)+'</span></button></div></div>';
+        }else{
+          targetLine=liveCtx.detailLine('成员','活动照片');
+        }
+        const eventLine=row.event.standalone_phone
+          ?liveCtx.detailLine('所属活动','未绑定具体活动')
+          :'<div class="detail-line"><span>所属活动</span><span class="detail-links"><button type="button" class="detail-link-btn" id="album-event-link">'+liveCtx.esc(row.event.event_name)+' ›</button></span></div>';
+        const lightboxCaption=row.photo.caption||(row.item?liveCtx.C.itemName(row.item):row.event.event_name);
+        liveCtx.modal(video?'视频详情':'照片详情',(video?'<video id="album-preview-video" class="photo-preview" controls playsinline preload="metadata"'+(poster?' poster="'+liveCtx.esc(poster)+'"':'')+' src="'+liveCtx.esc(row.photo.data)+'"></video>':'<img id="album-preview-img" class="photo-preview clickable" src="'+liveCtx.esc(row.photo.data)+'" alt="照片预览">')+liveCtx.detailLine('日期',row.date.slice(0,10))+targetLine+eventLine+(row.photo.caption?'<p>'+liveCtx.esc(row.photo.caption)+'</p>':'')+'<div class="actions"><button id="album-fullscreen" class="outline">'+(video?'全屏播放':'全屏 / 放大')+'</button>'+(hasNative?'<button id="album-native-play" class="outline">原生播放</button>':'')+'<button id="album-save-photo" class="primary">保存到相册</button></div><div class="actions"><button id="album-open-record" class="outline">查看原记录</button>'+(row.item&&liveCtx.C.kind(row.item)==='phone'?'<button id="album-edit-phone" class="primary">编辑手机合影</button>':'')+'</div>',false,{key:'album-photo:'+row.photo.id,restore:()=>openAlbumDetail(row)});
+        if(!video)liveCtx.on('#album-preview-img','click',()=>openLightbox(liveCtx,row.photo.data,lightboxCaption));else bindNativeVideoFallback('#album-preview-video',row.photo.data,lightboxCaption);
+        if(hasNative)liveCtx.on('#album-native-play','click',()=>root.AndroidBridge.playVideo(row.photo.data,lightboxCaption));
+        liveCtx.on('#album-fullscreen','click',()=>openLightbox(liveCtx,row.photo.data,lightboxCaption));
+        liveCtx.on('#album-save-photo','click',()=>savePhoto(liveCtx,row.photo.data));
+        liveCtx.on('#album-open-record','click',()=>liveCtx.onEvent(row.event.id));
+        liveCtx.on('#album-event-link','click',()=>liveCtx.onEvent(row.event.id));
+        liveCtx.allOn('[data-album-member]','click',btn=>{if(liveCtx.onMember)liveCtx.onMember(btn.dataset.albumMember);});
+        liveCtx.allOn('[data-album-group]','click',btn=>{if(liveCtx.onGroup)liveCtx.onGroup(btn.dataset.albumGroup);});
+        liveCtx.on('#album-edit-phone','click',()=>liveCtx.onEditItem(row.event.id,row.event.interactions.indexOf(row.item),null,'phone'));
+      }
+      ctx.allOn('[data-album-photo]','click',button=>{const row=rows[Number(button.dataset.albumPhoto)];if(row)openAlbumDetail(row);});
       ctx.on('#album-more','click',()=>{albumView.limit+=30;results();});
     }
     ctx.on('#add-phone-photo','click',()=>ctx.onEditItem(null,null,null,'phone'));

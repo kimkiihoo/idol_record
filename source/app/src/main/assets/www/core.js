@@ -7,7 +7,7 @@
   'use strict';
   const FORMAT = 'idol-tracker-backup';
   const SCHEMA_VERSION = 7;
-  const APP_VERSION = '1.3.0';
+  const APP_VERSION = '1.3.3';
   const MAX_MONEY = 99999999999999;
   const IMAGE_FIELDS = new Set(['image', 'image_name', 'photo', 'photo_name', 'images', 'photos', 'image_files', 'image_data', 'photo_data', 'image_url', 'photo_url', 'image_path', 'photo_path']);
   const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
@@ -102,6 +102,7 @@
   }
   function itemName(item) {
     if (kind(item) === 'multi') return participants(item).join(' / ');
+    if (isGroupItem(item)) return String(item.group_name || item.member || '未命名');
     return String(item.member || item.group_name || item.item_name || '未命名');
   }
   function validateAvatar(value, label) {
@@ -444,13 +445,29 @@
   }
   function groupSummary(state,name,options) {
     const rows=interactionRows(state,Object.assign({},options,{group:name}));let cost=0,shared=0;const members=new Map();
+    const groupCheki={count:0,cost:0},groupPhone={count:0,cost:0};
     for(const row of rows){
-      const amount=itemTotal(row.item);cost=safe(cost+amount);
-      if(isGroupItem(row.item)){shared=safe(shared+amount);continue;}
+      const amount=itemTotal(row.item),qty=count(row.item),phone=isPhone(row.item,row.event);cost=safe(cost+amount);
+      if(isGroupItem(row.item)){
+        shared=safe(shared+amount);
+        if(phone){groupPhone.count=safe(groupPhone.count+qty);groupPhone.cost=safe(groupPhone.cost+amount);}
+        else{groupCheki.count=safe(groupCheki.count+qty);groupCheki.cost=safe(groupCheki.cost+amount);}
+        continue;
+      }
       const ids=participantIds(row.item);
-      ids.forEach((id,index)=>{if(!identityGroups(row.item,state,row.event,id).includes(name))return;const share=Math.floor(amount/ids.length)+(index<amount%ids.length?1:0);shared=safe(shared+share);if(!members.has(id))members.set(id,{id,name:resolveMember(state,id).name,count:0,cost:0});const member=members.get(id);member.count+=count(row.item);member.cost+=share;});
+      ids.forEach((id,index)=>{
+        if(!identityGroups(row.item,state,row.event,id).includes(name))return;
+        const share=Math.floor(amount/ids.length)+(index<amount%ids.length?1:0);
+        shared=safe(shared+share);
+        if(!members.has(id))members.set(id,{id,name:resolveMember(state,id).name,count:0,chekiCount:0,phoneCount:0,cost:0});
+        const member=members.get(id);
+        member.count=safe(member.count+qty);
+        if(phone)member.phoneCount=safe(member.phoneCount+qty);
+        else member.chekiCount=safe(member.chekiCount+qty);
+        member.cost=safe(member.cost+share);
+      });
     }
-    return {records:rows.length,cost,shared,members:Array.from(members.values()).sort((a,b)=>b.count-a.count||b.cost-a.cost||a.id.localeCompare(b.id))};
+    return {records:rows.length,cost,shared,groupCheki,groupPhone,members:Array.from(members.values()).sort((a,b)=>b.count-a.count||b.cost-a.cost||a.id.localeCompare(b.id))};
   }
   function admission(event) {
     const cost=safe(cents(event.ticket_fee||0)+cents(event.drink_fee||0));
@@ -958,6 +975,12 @@
   }
   function entitySpendingSummary(state, records) {
     const membersMap = new Map(), groupsMap = new Map(), orgsMap = new Map();
+    const groupOrgs = new Map();
+    for (const gp of (state && state.config && state.config.group_profiles) || []) {
+      const orgs = names(gp && gp.organizers);
+      if (orgs.length) groupOrgs.set(gp.name, orgs);
+    }
+    const orgsForGroup = gName => groupOrgs.get(gName) || [];
     const ensure = (map, id, name) => {
       if (!map.has(id)) map.set(id, { id, name, cost: 0, count: 0, chekiCount: 0, phoneCount: 0, merchCount: 0, eventCount: 0 });
       return map.get(id);
@@ -974,8 +997,13 @@
     };
     for (const event of records || []) {
       const evOrgs = eventOrganizers(event);
-      const seenEventOrgs = new Set();
-      let baseEventCost = safe(cents(event.ticket_fee == null ? 0 : event.ticket_fee) + cents(event.drink_fee == null ? 0 : event.drink_fee));
+      if (evOrgs.length) {
+        const ticketCost = cents(event.ticket_fee == null ? 0 : event.ticket_fee);
+        const seenEventOrgs = new Set();
+        splitAdd(orgsMap, evOrgs, ticketCost, o => o, r => {
+          if (!seenEventOrgs.has(r.id)) { r.eventCount++; r.count++; seenEventOrgs.add(r.id); }
+        });
+      }
       for (const item of event.interactions || []) {
         const k = kind(item), total = itemTotal(item), qty = count(item), phone = isPhone(item, event);
         if (k === 'merch') {
@@ -984,24 +1012,46 @@
             : names(item.merch_members).map(n => resolveMember(state, n).id);
           splitAdd(membersMap, mIds, total, id => memberLabel(resolveMember(state, id), state), r => { r.merchCount += qty; r.count += qty; });
           const mGroups = names(item.affiliated_groups || item.affiliated_group);
-          splitAdd(groupsMap, mGroups, total, g => g, r => { r.merchCount += qty; r.count += qty; });
-          const mOrgs = names(item.merch_organizers);
-          if (mOrgs.length) {
-            splitAdd(orgsMap, mOrgs, total, o => o, r => { r.merchCount += qty; r.count += qty; });
-          } else {
-            baseEventCost = safe(baseEventCost + total);
+          if (mGroups.length) {
+            const nG = mGroups.length;
+            const seenMerchOrgs = new Set();
+            mGroups.forEach((g, idx) => {
+              const shareG = Math.floor(total / nG) + (idx < total % nG ? 1 : 0);
+              const gRow = ensure(groupsMap, g, g);
+              gRow.cost = safe(gRow.cost + shareG);
+              gRow.merchCount += qty;
+              gRow.count += qty;
+              const gOrgs = orgsForGroup(g);
+              if (gOrgs.length) {
+                splitAdd(orgsMap, gOrgs, shareG, o => o, r => {
+                  if (!seenMerchOrgs.has(r.id)) {
+                    r.merchCount += qty;
+                    r.count += qty;
+                    seenMerchOrgs.add(r.id);
+                  }
+                });
+              }
+            });
           }
           continue;
         }
-        baseEventCost = safe(baseEventCost + total);
         if (isGroupItem(item)) {
           const gName = String(item.group_name || '未知团体');
           const gRow = ensure(groupsMap, gName, gName);
           gRow.cost = safe(gRow.cost + total);
           if (phone) gRow.phoneCount += qty; else gRow.chekiCount += qty;
           gRow.count += qty;
+          const gOrgs = orgsForGroup(gName);
+          if (gOrgs.length) {
+            splitAdd(orgsMap, gOrgs, total, o => o, r => {
+              if (phone) r.phoneCount += qty; else r.chekiCount += qty;
+              r.count += qty;
+            });
+          }
         } else {
           const ids = participantIds(item);
+          const seenItemGroups = new Set();
+          const seenItemOrgs = new Set();
           ids.forEach((id, idx) => {
             const share = Math.floor(total / ids.length) + (idx < total % ids.length ? 1 : 0);
             const prof = resolveMember(state, id);
@@ -1010,17 +1060,31 @@
             if (phone) mRow.phoneCount += qty; else mRow.chekiCount += qty;
             mRow.count += qty;
             const gList = identityGroups(item, state, event, id);
-            splitAdd(groupsMap, gList, share, g => g, gRow => {
-              if (phone) gRow.phoneCount += qty; else gRow.chekiCount += qty;
-              gRow.count += qty;
-            });
+            if (gList.length) {
+              const nG = gList.length;
+              gList.forEach((g, gIdx) => {
+                const gShare = Math.floor(share / nG) + (gIdx < share % nG ? 1 : 0);
+                const gRow = ensure(groupsMap, g, g);
+                gRow.cost = safe(gRow.cost + gShare);
+                if (!seenItemGroups.has(g)) {
+                  if (phone) gRow.phoneCount += qty; else gRow.chekiCount += qty;
+                  gRow.count += qty;
+                  seenItemGroups.add(g);
+                }
+                const gOrgs = orgsForGroup(g);
+                if (gOrgs.length) {
+                  splitAdd(orgsMap, gOrgs, gShare, o => o, r => {
+                    if (!seenItemOrgs.has(r.id)) {
+                      if (phone) r.phoneCount += qty; else r.chekiCount += qty;
+                      r.count += qty;
+                      seenItemOrgs.add(r.id);
+                    }
+                  });
+                }
+              });
+            }
           });
         }
-      }
-      if (evOrgs.length) {
-        splitAdd(orgsMap, evOrgs, baseEventCost, o => o, r => {
-          if (!seenEventOrgs.has(r.id)) { r.eventCount++; r.count++; seenEventOrgs.add(r.id); }
-        });
       }
     }
     const sortRows = map => Array.from(map.values())

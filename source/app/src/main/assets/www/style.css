@@ -409,6 +409,7 @@ nav button.active .nav-tint{fill:rgba(204,75,120,.22)}
   display:flex;
   align-items:center;
   justify-content:space-between;
+  gap:10px;
   position:sticky;
   top:0;
   background:var(--bg);
@@ -417,10 +418,12 @@ nav button.active .nav-tint{fill:rgba(204,75,120,.22)}
   border-bottom:1px solid var(--line);
   margin-bottom:16px;
 }
-#modal-close{
+#modal-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+#modal-back,#modal-close{
   width:34px;
   height:34px;
   min-height:34px;
+  flex-shrink:0;
   padding:0;
   border-radius:50%;
   background:var(--surface-soft);
@@ -430,6 +433,70 @@ nav button.active .nav-tint{fill:rgba(204,75,120,.22)}
   font-size:calc(20px * var(--font-scale,1));
   line-height:1;
 }
+#modal-back{font-size:calc(24px * var(--font-scale,1));padding-right:1px}
+.item-target-btn{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  min-height:34px;
+  padding:2px 6px 2px 2px;
+  margin:-2px 0 -2px -2px;
+  background:none;
+  color:var(--ink);
+  border-radius:999px;
+  text-align:left;
+  font-size:inherit;
+  font-weight:700;
+  min-width:0;
+}
+.item-target-btn:active{background:var(--surface-soft)}
+.item-member-list{display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-width:0}
+.item-member-pill{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  min-height:32px;
+  padding:3px 10px 3px 4px;
+  border-radius:999px;
+  background:var(--surface-soft);
+  color:var(--ink);
+  font-size:calc(13px * var(--font-scale,1));
+  font-weight:650;
+}
+.item-member-pill .member-avatar{width:24px;height:24px;min-width:24px;font-size:11px}
+.item-merch-chips{margin:6px -3px 0}
+.detail-links{display:inline-flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:4px}
+.detail-link-btn{
+  display:inline-flex;
+  align-items:center;
+  min-height:28px;
+  padding:2px 8px;
+  border-radius:999px;
+  background:var(--surface-soft);
+  color:var(--pink-deep);
+  font-size:calc(12.5px * var(--font-scale,1));
+  font-weight:550;
+}
+.member-dist-list{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+.member-dist-row{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  width:100%;
+  padding:9px 10px;
+  border-radius:12px;
+  background:var(--bg);
+  color:var(--ink);
+  text-align:left;
+  min-height:42px;
+}
+.member-dist-row.static{cursor:default}
+.member-dist-left{display:flex;align-items:center;gap:8px;min-width:0}
+.member-dist-left strong{font-size:calc(13px * var(--font-scale,1));overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.member-dist-right{display:flex;flex-direction:column;align-items:flex-end;flex-shrink:0;font-variant-numeric:tabular-nums}
+.member-dist-right strong{font-size:calc(13px * var(--font-scale,1));color:var(--pink-deep)}
+.member-dist-right small{font-size:calc(11px * var(--font-scale,1));color:var(--muted);margin-top:2px}
 .field{display:block;margin:14px 0}
 .field>span{display:block;margin-bottom:7px;font-size:calc(12px * var(--font-scale,1));color:#7a4f61;font-weight:600}
 .field small{display:block;font-size:calc(11px * var(--font-scale,1));margin-top:6px;line-height:1.6}
@@ -519,7 +586,7 @@ nav button.active .nav-tint{fill:rgba(204,75,120,.22)}
 .member-avatar img{width:100%;height:100%;object-fit:cover}
 .member-avatar.sm{width:22px;height:22px;font-size:calc(10px * var(--font-scale,1));border-width:1.5px;margin-right:6px}
 .profile-heading{display:flex;align-items:center;margin:6px 0 14px;flex-wrap:wrap}
-.profile-heading .member-avatar{width:56px;height:56px;font-size:calc(20px * var(--font-scale,1));margin-right:14px}
+.profile-heading>.member-avatar{width:56px;height:56px;font-size:calc(20px * var(--font-scale,1));margin-right:14px}
 .profile-heading>div{flex:1;min-width:100px;overflow-wrap:anywhere}
 .profile-heading h2{line-height:1.35}
 .profile-heading p{font-size:calc(12px * var(--font-scale,1));margin-top:4px;line-height:1.55;overflow-wrap:anywhere}
@@ -729,7 +796,8 @@ button.stats-location:focus-visible{outline:2px solid var(--pink-deep)}
 :root[data-theme="dark"] .hero-grid .overview-metric{background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.12)}
 :root[data-theme="dark"] .hero .separator{background:rgba(255,255,255,.16)}
 :root[data-theme="dark"] .budget-track{background:rgba(255,255,255,.18)}
-:root[data-theme="dark"] .outline,:root[data-theme="dark"] .text,:root[data-theme="dark"] .overview-metric,:root[data-theme="dark"] .overview-cost,:root[data-theme="dark"] button.bar-row,:root[data-theme="dark"] button.stats-location,:root[data-theme="dark"] .period-controls button{background:transparent;color:inherit}
+:root[data-theme="dark"] .outline,:root[data-theme="dark"] .text,:root[data-theme="dark"] .overview-metric,:root[data-theme="dark"] .overview-cost,:root[data-theme="dark"] button.bar-row,:root[data-theme="dark"] button.stats-location,:root[data-theme="dark"] .period-controls button,:root[data-theme="dark"] .item-target-btn{background:transparent;color:inherit}
+:root[data-theme="dark"] .member-dist-row{background:var(--bg);color:var(--ink)}
 :root[data-theme="dark"] .outline{border-color:var(--line);color:var(--pink)}
 :root[data-theme="dark"] .notice,:root[data-theme="dark"] .stats-type,:root[data-theme="dark"] .segmented button.active,:root[data-theme="dark"] nav button.active,:root[data-theme="dark"] .batch-item.active,:root[data-theme="dark"] .organizer-badge{background:var(--mint);color:var(--ink)}
 :root[data-theme="dark"] nav button.active{color:var(--pink)}
@@ -771,7 +839,8 @@ button.stats-location:focus-visible{outline:2px solid var(--pink-deep)}
   :root[data-theme="system"] .hero-grid .overview-metric{background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.12)}
   :root[data-theme="system"] .hero .separator{background:rgba(255,255,255,.16)}
   :root[data-theme="system"] .budget-track{background:rgba(255,255,255,.18)}
-  :root[data-theme="system"] .outline,:root[data-theme="system"] .text,:root[data-theme="system"] .overview-metric,:root[data-theme="system"] .overview-cost,:root[data-theme="system"] button.bar-row,:root[data-theme="system"] button.stats-location,:root[data-theme="system"] .period-controls button{background:transparent;color:inherit}
+  :root[data-theme="system"] .outline,:root[data-theme="system"] .text,:root[data-theme="system"] .overview-metric,:root[data-theme="system"] .overview-cost,:root[data-theme="system"] button.bar-row,:root[data-theme="system"] button.stats-location,:root[data-theme="system"] .period-controls button,:root[data-theme="system"] .item-target-btn{background:transparent;color:inherit}
+  :root[data-theme="system"] .member-dist-row{background:var(--bg);color:var(--ink)}
   :root[data-theme="system"] .outline{border-color:var(--line);color:var(--pink)}
   :root[data-theme="system"] .notice,:root[data-theme="system"] .stats-type,:root[data-theme="system"] .segmented button.active,:root[data-theme="system"] nav button.active,:root[data-theme="system"] .batch-item.active,:root[data-theme="system"] .organizer-badge{background:var(--mint);color:var(--ink)}
   :root[data-theme="system"] nav button.active{color:var(--pink)}

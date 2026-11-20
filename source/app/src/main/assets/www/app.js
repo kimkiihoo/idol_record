@@ -7,7 +7,7 @@ const F={cheki:'普通切',signed:'签名切',unsigned:'无签切',online:'电�
 const esc=v=>String(v==null?'':v).replace(/[&<>"']/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x]));
 const cash=v=>'¥'+C.money(v),today=()=>{const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');};
 const uid=()=>window.crypto&&crypto.randomUUID?crypto.randomUUID().replace(/-/g,''):Date.now().toString(36)+Math.random().toString(36).slice(2);
-let state,storageError='',tab='home',period='month',anchor=today(),customStart=today().slice(0,7)+'-01',customEnd=today(),query='',eventType='',venueFilter='',memberFilter='',organizerFilter='',limit=30,closeGuard=null,toastTimer;
+let state,storageError='',tab='home',period='month',anchor=today(),customStart=today().slice(0,7)+'-01',customEnd=today(),query='',eventType='',venueFilter='',memberFilter='',organizerFilter='',limit=30,closeGuard=null,toastTimer,modalStack=[],currentModalNav=null,poppingModal=false;
 function notice(msg){clearTimeout(toastTimer);$('#toast').textContent=msg;$('#toast').classList.remove('hidden');toastTimer=setTimeout(()=>$('#toast').classList.add('hidden'),5000);}
 window.onNativeNotice=(msg)=>notice(msg);
 function showError(err){const target=$('#modal').classList.contains('hidden')?null:$('#form-error');if(target){target.textContent=err.message;target.scrollIntoView({block:'nearest'});}else notice(err.message);}
@@ -15,18 +15,45 @@ function guard(fn){return function(e){try{const result=fn(e);if(result&&typeof r
 function on(sel,type,fn){const el=$(sel);if(el)el.addEventListener(type,guard(fn));}
 function allOn(sel,type,fn){$$(sel).forEach(el=>el.addEventListener(type,guard(e=>fn(el,e))));}
 function read(key){return $('#'+key).value.trim();}
-function opts(map,value){const all=Object.assign({},map);if(value&&!Object.prototype.hasOwnProperty.call(all,value))all[value]=value;return Object.entries(all).map(([k,v])=>'<option value="'+esc(k)+'"'+(k===value?' selected':'')+'>'+esc(v)+'</option>').join('');}
+function opts(mapOrEntries,value){const entries=Array.isArray(mapOrEntries)?mapOrEntries.slice():Object.entries(mapOrEntries||{});if(value&&!entries.some(([k])=>k===value))entries.push([value,value]);return entries.map(([k,v])=>'<option value="'+esc(k)+'"'+(k===value?' selected':'')+'>'+esc(v)+'</option>').join('');}
 function field(label,id,value='',type='text',extra=''){return '<label class="field"><span>'+label+'</span><input id="'+id+'" type="'+type+'" value="'+esc(value)+'" '+extra+'></label>';}
 function select(label,id,map,value){return '<label class="field"><span>'+label+'</span><select id="'+id+'">'+opts(map,value)+'</select></label>';}
 function textArea(label,id,value=''){return '<label class="field"><span>'+label+'</span><textarea id="'+id+'">'+esc(value)+'</textarea></label>';}
 function empty(msg='这一时段还没有记录'){return '<div class="empty">'+esc(msg)+'</div>';}
 function detailLine(k,v){return '<div class="detail-line"><span>'+esc(k)+'</span><span>'+esc(v)+'</span></div>';}
-function modal(title,html,guardClose){$('#modal-title').textContent=title;$('#modal-body').onclick=null;$('#modal-body').innerHTML=html;$('#modal').classList.remove('hidden');$('.sheet').scrollTop=0;document.body.style.overflow='hidden';closeGuard=guardClose||null;}
+function syncModalBack(){const btn=$('#modal-back');if(btn)btn.classList.toggle('hidden',modalStack.length===0);}
+function modal(title,html,guardClose,navMeta){
+ const open=!$('#modal').classList.contains('hidden');
+ const nextNav=navMeta&&typeof navMeta.restore==='function'?navMeta:null;
+ if(!poppingModal&&open&&currentModalNav&&(!nextNav||nextNav.key!==currentModalNav.key)){
+  modalStack.push(currentModalNav);
+  if(modalStack.length>30)modalStack.shift();
+ }
+ currentModalNav=nextNav;
+ $('#modal-title').textContent=title;$('#modal-body').onclick=null;$('#modal-body').innerHTML=html;$('#modal').classList.remove('hidden');$('.sheet').scrollTop=0;document.body.style.overflow='hidden';closeGuard=guardClose||null;
+ syncModalBack();
+}
 function askConfirm(opts,onYes){const cfg=typeof opts==='string'?{message:opts}:Object.assign({},opts);const box=$('#confirm-dialog');if(!box){if(confirm(cfg.message))onYes();return;}$('#confirm-title').textContent=cfg.title||'请确认';$('#confirm-message').textContent=cfg.message||'';const ok=$('#confirm-ok'),cancel=$('#confirm-cancel');ok.textContent=cfg.okText||'确认';cancel.textContent=cfg.cancelText||'取消';ok.classList.toggle('danger',!!cfg.danger);ok.classList.toggle('primary',!cfg.danger);box.classList.remove('hidden');cancel.onclick=()=>{box.classList.add('hidden');};ok.onclick=()=>{box.classList.add('hidden');onYes();};}
-function finishCloseModal(){$('#modal').classList.add('hidden');document.body.style.overflow='';closeGuard=null;}
+function finishCloseModal(){modalStack=[];currentModalNav=null;syncModalBack();$('#modal').classList.add('hidden');document.body.style.overflow='';closeGuard=null;}
+function popModal(force){
+ if(!modalStack.length){closeModal(force);return;}
+ const runPop=()=>{
+  while(modalStack.length){
+   const prev=modalStack.pop();
+   closeGuard=null;
+   poppingModal=true;
+   try{prev.restore();poppingModal=false;syncModalBack();return;}
+   catch(_){poppingModal=false;}
+  }
+  finishCloseModal();
+ };
+ if(!force&&closeGuard){askConfirm({title:'放弃尚未保存的修改？',message:'当前填写或调整的内容还未保存，返回上一页后将不会保留。',okText:'放弃并返回',cancelText:'继续编辑',danger:true},runPop);return;}
+ runPop();
+}
 function closeModal(force){if(!force&&closeGuard){askConfirm({title:'放弃尚未保存的修改？',message:'当前填写或调整的内容还未保存，关闭后将不会保留。',okText:'放弃修改',cancelText:'继续编辑',danger:true},finishCloseModal);return;}finishCloseModal();}
+on('#modal-back','click',()=>popModal(false));
 on('#modal-close','click',()=>closeModal(false));
-window.onNativeBack=()=>{const c=$('#confirm-dialog');if(c&&!c.classList.contains('hidden')){c.classList.add('hidden');return true;}if(window.IdolPhotos&&window.IdolPhotos.closeLightbox&&window.IdolPhotos.closeLightbox())return true;if(!$('#modal').classList.contains('hidden')){closeModal(false);return true;}if(tab!=='home'){navigate('home');return true;}return false;};
+window.onNativeBack=()=>{const c=$('#confirm-dialog');if(c&&!c.classList.contains('hidden')){c.classList.add('hidden');return true;}if(window.IdolPhotos&&window.IdolPhotos.closeLightbox&&window.IdolPhotos.closeLightbox())return true;if(!$('#modal').classList.contains('hidden')){if(modalStack.length)popModal(false);else closeModal(false);return true;}if(tab!=='home'){navigate('home');return true;}return false;};
 function persist(next){let valid=C.validateState(next);valid.updated_at=new Date().toISOString();const text=JSON.stringify(valid);if(window.AndroidBridge){const result=JSON.parse(AndroidBridge.writeState(text));if(!result.ok)throw new Error(result.error||'保存失败，请重试');if(result.state)valid=C.validateState(result.state);}else{localStorage.setItem('idol-previous',localStorage.getItem('idol-state')||'');localStorage.setItem('idol-state',text);}state=valid;storageError='';return true;}
 function commitEvent(event,isNew){const next=C.clone(state);const i=next.records.findIndex(r=>r.id===event.id);event.updated_at=new Date().toISOString();if(i>=0)next.records[i]=event;else if(isNew)next.records.push(event);else throw new Error('活动已不存在，请重新打开');persist(next);render();}
 function range(){if(period==='custom'){C.validDate(customStart);C.validDate(customEnd);if(customStart>customEnd)throw new Error('开始日期不能晚于结束日期');return{start:customStart,end:customEnd,label:customStart+' 至 '+customEnd};}return C.periodRange(period,anchor);}
@@ -47,8 +74,9 @@ function overviewMetric(kind,label,value){
 }
 function itemAvatars(item){
  if(!item||!window.IdolPeople||!window.IdolPeople.avatar)return '';
- const ids=C.participantIds(item);if(!ids.length)return '';
  const ctx={esc,C,state};
+ if(C.isGroupItem(item))return '<div class="avatar-stack">'+window.IdolPeople.avatar(ctx,C.groupProfile(state,C.itemName(item)))+'</div>';
+ const ids=C.participantIds(item);if(!ids.length)return '';
  return '<div class="avatar-stack">'+ids.map(id=>window.IdolPeople.avatar(ctx,C.resolveMember(state,id))).join('')+'</div>';
 }
 function showOverviewDetail(kind,records,label){
@@ -75,7 +103,7 @@ function showOverviewDetail(kind,records,label){
  function paint(){
   const total=rows.reduce((sum,row)=>sum+row.cost,0),count=rows.reduce((sum,row)=>sum+(row.item?C.count(row.item):1),0);
   const days=new Set(rows.map(row=>row.event.date)).size;
-  modal((titles[kind]||F[kind.slice(5)]||'消费')+' · 详情','<p class="subtle">'+esc(label||'全部历史')+' · 按活动日期</p><div class="card">'+detailLine('金额合计',cash(total))+detailLine('记录数',rows.length+' 条')+(rows.some(row=>row.item)?detailLine('数量合计',count+(kind==='merch'?' 件':' 张')):detailLine('有记录的日期',days+' 天'))+'</div>'+rows.slice(0,visible).map(row=>{const faces=row.item?itemAvatars(row.item):'',title=esc(row.item?C.itemName(row.item):row.event.event_name),heading=faces?'<div class="item-member">'+faces+'<strong>'+title+'</strong></div>':'<strong>'+title+'</strong>';return '<button class="interaction-card" data-detail-event="'+esc(row.event.id)+'"><div class="row">'+heading+'<strong class="nowrap">'+cash(row.cost)+'</strong></div><p>'+esc(row.event.date+' · '+(row.item?row.event.event_name:[row.event.city,row.event.venue].filter(Boolean).join(' · ')))+'</p>'+(row.item?'<p>'+C.count(row.item)+(kind==='merch'?' 件':' 张')+'</p>':'')+'</button>';}).join('')+(rows.length?'':empty('本时段暂无记录'))+(rows.length>visible?'<button id="more-overview-detail" class="outline" style="width:100%">再显示 30 条</button>':''));
+  modal((titles[kind]||F[kind.slice(5)]||'消费')+' · 详情','<p class="subtle">'+esc(label||'全部历史')+' · 按活动日期</p><div class="card">'+detailLine('金额合计',cash(total))+detailLine('记录数',rows.length+' 条')+(rows.some(row=>row.item)?detailLine('数量合计',count+(kind==='merch'?' 件':' 张')):detailLine('有记录的日期',days+' 天'))+'</div>'+rows.slice(0,visible).map(row=>{const faces=row.item?itemAvatars(row.item):'',title=esc(row.item?C.itemName(row.item):row.event.event_name),heading=faces?'<div class="item-member">'+faces+'<strong>'+title+'</strong></div>':'<strong>'+title+'</strong>';return '<button class="interaction-card" data-detail-event="'+esc(row.event.id)+'"><div class="row">'+heading+'<strong class="nowrap">'+cash(row.cost)+'</strong></div><p>'+esc(row.event.date+' · '+(row.item?row.event.event_name:[row.event.city,row.event.venue].filter(Boolean).join(' · ')))+'</p>'+(row.item?'<p>'+C.count(row.item)+(kind==='merch'?' 件':' 张')+'</p>':'')+'</button>';}).join('')+(rows.length?'':empty('本时段暂无记录'))+(rows.length>visible?'<button id="more-overview-detail" class="outline" style="width:100%">再显示 30 条</button>':''),false,{key:'overview:'+kind+':'+(label||''),restore:()=>showOverviewDetail(kind,records,label)});
   allOn('[data-detail-event]','click',element=>showEvent(element.dataset.detailEvent));
   on('#more-overview-detail','click',()=>{visible+=30;paint();});
  }
@@ -86,13 +114,36 @@ function renderHome(){
  const homeCosts=[['ticket','门票',s.ticket],['drink','Drink代',s.drink],['benefits','特典',s.benefit],...(s.phone||s.phoneCount?[['phone','手机合影',s.phone]]:[]),['merch','周边',s.merch]];
  return '<div class="intro"><p>'+esc(month)+' · 本月手账</p></div><div class="home-columns"><section class="hero"><small>本月总支出</small><button class="value overview-metric" data-overview-detail="total" aria-label="查看总支出详情"><span>¥ </span>'+C.money(s.total)+' ›</button><div class="hero-grid">'+overviewMetric('events','活动记录',s.eventCount)+overviewMetric('performances','演出场次',s.eventTypes.performance||0)+overviewMetric('benefits','特典张',s.ticketCount)+'</div><div class="separator"></div><div class="row"><small>'+(budget?'月预算 '+cash(budget):'尚未设置月预算')+'</small><small>'+(budget?(left>=0?'剩余 '+cash(left):'超出 '+cash(-left)):'在设置页设置')+'</small></div>'+(budget?'<div class="budget-track"><i class="'+(left<0?'over':'')+'" style="width:'+Math.min(100,s.total/budget*100)+'%"></i></div>':'')+'</section><section><div class="section-title"><h3>本月消费</h3></div><div class="card">'+homeCosts.map(([kind,label,value])=>'<button class="overview-cost" data-overview-detail="'+kind+'">'+detailLine(label,cash(value)+' ›')+'</button>').join('')+'</div><button id="month-stats" class="outline" style="margin-top:12px;width:100%">打开本月详细统计 ↗</button></section></div><div class="section-title row"><h3>最近的相见</h3><button class="text" id="all-records">全部 '+state.records.length+' 条 ›</button></div>'+state.records.slice(0,5).map(eventCard).join('')+(state.records.length?'':empty('还没有记录，点右上角记下第一场活动'));
 }
-function choiceMap(values,label){return Object.fromEntries([['',label],...C.names(values).sort((a,b)=>a.localeCompare(b,'zh')).map(value=>[value,value])]);}
+function rankedOptions(records,getKeys,allLabel,labelFor){
+ const counts=new Map();
+ for(const event of records){
+  const seen=new Set();
+  for(const raw of getKeys(event)){
+   const key=raw==null?'':String(raw);
+   if(!key||seen.has(key))continue;
+   seen.add(key);
+   let row=counts.get(key);
+   if(!row){row={key,label:String(labelFor?labelFor(key):key),count:0,latest:''};counts.set(key,row);}
+   row.count++;
+   if((event.date||'')>row.latest)row.latest=event.date||'';
+  }
+ }
+ const sorted=Array.from(counts.values()).sort((a,b)=>b.count-a.count||String(b.latest||'').localeCompare(String(a.latest||''))||a.label.localeCompare(b.label,'zh'));
+ return [['',allLabel],...sorted.map(row=>[row.key,row.label])];
+}
 function renderRecords(){
- const venues=state.records.map(event=>event.venue).filter(value=>value&&value!=='-');
- const organizers=state.records.flatMap(event=>[...C.eventOrganizers(event),...(event.interactions||[]).flatMap(it=>C.names(it.merch_organizers))]);
+ const scoped=inRange(state.records);
+ const typeOpts=rankedOptions(scoped,event=>[event.event_type||'performance'],'全部活动类型',k=>E[k]||k);
+ const venueOpts=rankedOptions(scoped,event=>event.venue&&event.venue!=='-'?[event.venue]:[],'全部场地');
+ const memberOpts=rankedOptions(scoped,event=>(event.interactions||[]).flatMap(it=>C.kind(it)==='merch'?(Array.isArray(it.merch_member_ids)&&it.merch_member_ids.length?it.merch_member_ids:C.names(it.merch_members).map(n=>C.resolveMember(state,n).id)):C.participantIds(it)),'全部成员',id=>C.memberLabel(C.resolveMember(state,id),state));
+ const organizerOpts=rankedOptions(scoped,event=>[...C.eventOrganizers(event),...(event.interactions||[]).flatMap(it=>C.names(it.merch_organizers))],'全部主办');
+ if(eventType&&!typeOpts.some(([k])=>k===eventType))eventType='';
+ if(venueFilter&&!venueOpts.some(([k])=>k===venueFilter))venueFilter='';
+ if(memberFilter&&!memberOpts.some(([k])=>k===memberFilter))memberFilter='';
+ if(organizerFilter&&!organizerOpts.some(([k])=>k===organizerFilter))organizerFilter='';
  return '<div class="intro"><h1>活动记录</h1></div>'+periodBar()+
-  '<div class="filter-grid">'+select('活动类型','event-type',Object.assign({'':'全部活动类型'},E),eventType)+select('场地','record-venue',choiceMap(venues,'全部场地'),venueFilter)+
-  select('成员','record-member',Object.fromEntries([['','全部成员'],...C.memberCatalog(state).map(profile=>[profile.id,C.memberLabel(profile,state)])]),memberFilter)+select('主办事务所','record-organizer',choiceMap(organizers,'全部主办'),organizerFilter)+'</div>'+
+  '<div class="filter-grid">'+select('活动类型','event-type',typeOpts,eventType)+select('场地','record-venue',venueOpts,venueFilter)+
+  select('成员','record-member',memberOpts,memberFilter)+select('主办事务所','record-organizer',organizerOpts,organizerFilter)+'</div>'+
   '<input id="search" class="search search-below-filters" placeholder="搜索活动、成员、场地、主办或拼音" value="'+esc(query)+'">'+
   '<div id="records-results"></div>';
 }
@@ -106,7 +157,7 @@ function backupTimeLabel(){const timestamp=lastBackupTime();return timestamp?'�
 window.onNativeExported=()=>{if(tab==='backup')render();};
 function showFootprintDetail(which,name,city){
  const rows=inRange(state.records).filter(event=>which==='cities'?event.city===name:event.venue===name&&(event.city||'未知城市')===city);let visible=30;
- function paint(){modal(name+' · 足迹详情','<p class="subtle">'+esc(range().label)+' · 按活动日期</p><div class="card">'+detailLine('活动次数',rows.length+' 次')+detailLine('支出合计',cash(C.stats(rows).total))+'</div>'+rows.slice(0,visible).map(eventCard).join('')+(rows.length?'':empty())+(rows.length>visible?'<button id="more-footprint" class="outline">再显示 30 条</button>':''));bindEvents();on('#more-footprint','click',()=>{visible+=30;paint();});}
+ function paint(){modal(name+' · 足迹详情','<p class="subtle">'+esc(range().label)+' · 按活动日期</p><div class="card">'+detailLine('活动次数',rows.length+' 次')+detailLine('支出合计',cash(C.stats(rows).total))+'</div>'+rows.slice(0,visible).map(eventCard).join('')+(rows.length?'':empty())+(rows.length>visible?'<button id="more-footprint" class="outline">再显示 30 条</button>':''),false,{key:'footprint:'+which+':'+name+':'+(city||''),restore:()=>showFootprintDetail(which,name,city)});bindEvents();on('#more-footprint','click',()=>{visible+=30;paint();});}
  paint();
 }
 function uiSvg(body){return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+body+'</svg>';}
@@ -159,40 +210,81 @@ function render(){
 function statsContext(){return{C,state,records:inRange(state.records),range:range(),periodKind:period,anchor,esc,money:cash,onMember:showMember,onGroup:name=>window.IdolPeople.showGroup(peopleContext(),name,'activity'),onOrganizer:name=>window.IdolPeople.showOrganizer(peopleContext(),name),onLocation:(which,name,city)=>showFootprintDetail(which,name,city),onDetail:kind=>showOverviewDetail(kind,inRange(state.records),range().label),onFilter:type=>{eventType=type;query='';venueFilter='';memberFilter='';organizerFilter='';navigate('records');},onPeriod:(p,a)=>{period=p;anchor=a||anchor;render();},onCustom:(s,e)=>{customStart=s;customEnd=e;period='custom';render();},notify:notice};}
 function peopleContext(){
  const ctx=statsContext();
- return Object.assign(ctx,{on,allOn,field,select,textArea,detailLine,modal,closeModal,askConfirm,read,empty,persist,historyPicker,bindHistory,rerender:render,onSection:selectStatsSection,onEvent:showEvent,uid,onQuick:quickMember,onEditEvent:editEvent,onEditItem:editItem,onFilterOrganizer:organizer=>{eventType='';query='';venueFilter='';memberFilter='';organizerFilter=organizer;period='all';limit=30;navigate('records');},onRenameOrganizer:(oldName,newName)=>{if(organizerFilter===oldName)organizerFilter=newName;},renderOverview:()=>window.IdolStats.render(ctx),bindOverview:()=>window.IdolStats.bind(ctx),renderFootprints:()=>window.IdolStats.renderFootprints(ctx),bindFootprints:()=>window.IdolStats.bind(ctx)});
+ return Object.assign(ctx,{on,allOn,field,select,textArea,detailLine,modal,closeModal,popModal,fresh:peopleContext,askConfirm,read,empty,persist,historyPicker,bindHistory,rerender:render,onSection:selectStatsSection,onEvent:showEvent,uid,onQuick:quickMember,onEditEvent:editEvent,onEditItem:editItem,onFilterOrganizer:organizer=>{eventType='';query='';venueFilter='';memberFilter='';organizerFilter=organizer;period='all';limit=30;navigate('records');},onRenameOrganizer:(oldName,newName)=>{if(organizerFilter===oldName)organizerFilter=newName;},renderOverview:()=>window.IdolStats.render(ctx),bindOverview:()=>window.IdolStats.bind(ctx),renderFootprints:()=>window.IdolStats.renderFootprints(ctx),bindFootprints:()=>window.IdolStats.bind(ctx)});
 }
 function showEvent(id){
  const e=state.records.find(r=>r.id===id);if(!e)throw new Error('未找到活动');
+ const ctx=peopleContext();
  const onlineType=['online_cheki','theme_homework','merch_only'].includes(e.event_type);
  const orgList=C.eventOrganizers(e);
- const orgLine=orgList.length?'<div class="detail-line detail-line-chips"><span>主办事务所</span><div class="chips event-org-chips">'+orgList.map((org,idx)=>'<button type="button" class="organizer-chip" data-event-organizer="'+idx+'">'+window.IdolPeople.avatar(peopleContext(),C.organizerProfile(state,org),'sm')+'<span>'+esc(org)+'</span></button>').join('')+'</div></div>':'';
- const venueText=e.standalone_merch?'不绑定活动（仅买周边）':onlineType?(e.venue&&e.venue!=='-'?e.venue:'线上购买'):[e.city,e.venue].filter(Boolean).join(' · ');
- const showFees=!onlineType||C.cents(e.ticket_fee)>0||C.cents(e.drink_fee)>0||e.ticket_quantity>0;
+ const orgLine=orgList.length?'<div class="detail-line detail-line-chips"><span>主办事务所</span><div class="chips event-org-chips">'+orgList.map((org,idx)=>'<button type="button" class="organizer-chip" data-event-organizer="'+idx+'">'+window.IdolPeople.avatar(ctx,C.organizerProfile(state,org),'sm')+'<span>'+esc(org)+'</span></button>').join('')+'</div></div>':'';
+ const perfList=e.event_type!=='merch_only'?C.names(e.performing_groups):[];
+ const perfLine=perfList.length?'<div class="detail-line detail-line-chips"><span>参演团体</span><div class="chips event-org-chips">'+perfList.map((grp,idx)=>'<button type="button" class="organizer-chip" data-event-group="'+idx+'">'+window.IdolPeople.avatar(ctx,C.groupProfile(state,grp),'sm')+'<span>'+esc(grp)+'</span></button>').join('')+'</div></div>':'';
+ const venueText=e.standalone_merch?'不绑定活动（仅买周边）':e.standalone_phone?'未绑定具体活动':onlineType?(e.venue&&e.venue!=='-'?e.venue:'线上购买'):[e.city,e.venue].filter(Boolean).join(' · ');
+ const locParts=[];
+ if(!onlineType&&!e.standalone_phone){
+  if(C.isPhysicalLocation(e.city))locParts.push('<button type="button" class="detail-link-btn" data-event-city="'+esc(e.city)+'">'+esc(e.city)+'</button>');
+  if(C.isPhysicalLocation(e.venue))locParts.push('<button type="button" class="detail-link-btn" data-event-venue="'+esc(e.venue)+'" data-event-venue-city="'+esc(e.city||'未知城市')+'">'+esc(e.venue)+'</button>');
+ }
+ const locLine=locParts.length?'<div class="detail-line"><span>城市 / 场地</span><span class="detail-links">'+locParts.join('')+'</span></div>':detailLine(onlineType?'购买渠道':e.standalone_phone?'所属活动':'城市 / 场地',venueText);
+ const showFees=(!onlineType&&!e.standalone_phone)||C.cents(e.ticket_fee)>0||C.cents(e.drink_fee)>0||e.ticket_quantity>0;
  let html='<div class="card event-detail-card"><div class="row event-detail-head"><span class="tag">'+esc(E[e.event_type]||e.event_type)+'</span><strong>'+cash(C.eventTotal(e))+'</strong></div>'+
   detailLine('日期',e.date)+
-  detailLine(onlineType?'购买渠道':'城市 / 场地',venueText)+
+  locLine+
   orgLine+
-  (e.event_type!=='merch_only'&&C.names(e.performing_groups).length?detailLine('参演团体',C.names(e.performing_groups).join(' / ')):'')+
+  perfLine+
   (showFees?detailLine('门票',cash(C.cents(e.ticket_fee))+(e.ticket_quantity?' · '+e.ticket_quantity+' 张 · '+(e.ticket_type||'未设票种')+(e.ticket_is_free?' · 免费':''):''))+(e.session?detailLine('场次',e.session):'')+detailLine('Drink代',cash(C.cents(e.drink_fee))):'')+
   (C.names(e.tags).length?detailLine('标签',C.names(e.tags).join(' / ')):'')+
   '</div>'+
   (e.note?'<div class="notice" style="margin-top:10px">'+esc(e.note)+'</div>':'')+
-  window.IdolPhotos.gallery(peopleContext(),e.attachments,'event-photo')+
+  window.IdolPhotos.gallery(ctx,e.attachments,'event-photo')+
   '<div class="actions"><button id="edit-basics" class="outline">修改活动</button><button id="delete-event" class="danger">删除活动</button></div>'+
   '<div class="section-title row"><h3>消费明细 · '+e.interactions.length+' 条</h3><button id="add-item" class="primary compact">＋ 补记</button></div>'+
   e.interactions.map((it,i)=>{
-   const faces=itemAvatars(it),k=C.kind(it),heading=faces?'<div class="item-member">'+faces+'<strong>'+esc(C.itemName(it))+'</strong></div>':'<strong>'+esc(C.itemName(it))+'</strong>';
-   const kindText=k==='merch'?'周边':(C.isGroupItem(it)?(k==='phone'?'团体 · ':'团体特典 · '):k==='multi'?'多人特典 · ':'单人 · ')+C.benefitLabel(it,state,e),unitText=k==='merch'?' 件':' 张';
-   const merchTargets=k==='merch'?[C.names(it.merch_members).length?'成员 '+C.names(it.merch_members).join(' / '):'',C.names(it.affiliated_groups||it.affiliated_group).length?'团体 '+C.names(it.affiliated_groups||it.affiliated_group).join(' / '):'',C.names(it.merch_organizers).length?'事务所 '+C.names(it.merch_organizers).join(' / '):''].filter(Boolean).join(' · '):'';
-   return '<div class="item-card"><div class="row">'+heading+'<strong class="nowrap">'+cash(C.itemTotal(it))+'</strong></div><div class="item-note">'+esc(kindText)+' · '+C.count(it)+unitText+(identityDescription(it,e)?' · '+esc(identityDescription(it,e)):merchTargets?' · '+esc(merchTargets):'')+'</div>'+(k!=='merch'&&it.shot_at?'<div class="item-note">拍摄 '+esc(it.shot_at.slice(0,10))+'</div>':'')+(it.note?'<div class="item-note">'+esc(it.note)+'</div>':'')+(it.order_number?'<div class="item-note">订单 / 运单 '+esc(it.order_number)+'</div>':'')+window.IdolPhotos.gallery(peopleContext(),it.attachments,'item-photo-'+i)+'<div class="buttons"><button data-edit-item="'+i+'">修改明细</button><button class="danger" data-delete-item="'+i+'">删除</button></div></div>';
+   const k=C.kind(it),isGrp=C.isGroupItem(it),ids=C.participantIds(it);
+   let heading='';
+   if(k==='merch'){
+    heading='<strong>'+esc(C.itemName(it))+'</strong>';
+   }else if(isGrp){
+    const gName=C.itemName(it);
+    heading='<button type="button" class="item-target-btn" data-item-group="'+esc(gName)+'">'+window.IdolPeople.avatar(ctx,C.groupProfile(state,gName))+'<span>'+esc(gName)+'</span></button>';
+   }else if(k==='multi'&&ids.length){
+    heading='<div class="item-member-list">'+ids.map(pid=>{const prof=C.resolveMember(state,pid);return '<button type="button" class="item-member-pill" data-item-member="'+esc(pid)+'">'+window.IdolPeople.avatar(ctx,prof,'sm')+'<span>'+esc(prof.name)+'</span></button>';}).join('')+'</div>';
+   }else if(ids.length){
+    const prof=C.resolveMember(state,ids[0]);
+    heading='<button type="button" class="item-target-btn" data-item-member="'+esc(ids[0])+'">'+window.IdolPeople.avatar(ctx,prof)+'<span>'+esc(C.itemName(it))+'</span></button>';
+   }else{
+    heading='<strong>'+esc(C.itemName(it))+'</strong>';
+   }
+   const benefitText=k==='merch'?'':C.benefitLabel(it,state,e);
+   const kindText=k==='merch'?'周边':(isGrp?(k==='phone'?'团体 · ':/^(?:团体特典|\u56e2\u5207)/.test(benefitText)?'':'团体特典 · '):k==='multi'?'多人特典 · ':'单人 · ')+benefitText,unitText=k==='merch'?' 件':' 张';
+   let merchChips='';
+   if(k==='merch'){
+    const mMemIds=Array.isArray(it.merch_member_ids)&&it.merch_member_ids.length?it.merch_member_ids:C.names(it.merch_members).map(n=>C.resolveMember(state,n).id);
+    const mGrps=C.names(it.affiliated_groups||it.affiliated_group);
+    const mOrgs=C.names(it.merch_organizers);
+    const chipBtns=[
+     ...mMemIds.map(pid=>{const prof=C.resolveMember(state,pid);return '<button type="button" class="organizer-chip" data-item-member="'+esc(pid)+'">'+window.IdolPeople.avatar(ctx,prof,'sm')+'<span>'+esc(prof.name)+'</span></button>';}),
+     ...mGrps.map(g=>'<button type="button" class="organizer-chip" data-item-group="'+esc(g)+'">'+window.IdolPeople.avatar(ctx,C.groupProfile(state,g),'sm')+'<span>'+esc(g)+'</span></button>'),
+     ...mOrgs.map(o=>'<button type="button" class="organizer-chip" data-item-organizer="'+esc(o)+'">'+window.IdolPeople.avatar(ctx,C.organizerProfile(state,o),'sm')+'<span>'+esc(o)+'</span></button>')
+    ];
+    if(chipBtns.length)merchChips='<div class="chips item-merch-chips">'+chipBtns.join('')+'</div>';
+   }
+   return '<div class="item-card"><div class="row">'+heading+'<strong class="nowrap">'+cash(C.itemTotal(it))+'</strong></div><div class="item-note">'+esc(kindText)+' · '+C.count(it)+unitText+(identityDescription(it,e)?' · '+esc(identityDescription(it,e)):'')+'</div>'+merchChips+(k!=='merch'&&it.shot_at?'<div class="item-note">拍摄 '+esc(it.shot_at.slice(0,10))+'</div>':'')+(it.note?'<div class="item-note">'+esc(it.note)+'</div>':'')+(it.order_number?'<div class="item-note">订单 / 运单 '+esc(it.order_number)+'</div>':'')+window.IdolPhotos.gallery(ctx,it.attachments,'item-photo-'+i)+'<div class="buttons"><button data-edit-item="'+i+'">修改明细</button><button class="danger" data-delete-item="'+i+'">删除</button></div></div>';
   }).join('')+(e.interactions.length?'':empty('可以只看演出，也可以稍后补记特典和周边。'));
- modal(e.event_name||'活动详情',html);
+ modal(e.event_name||'活动详情',html,false,{key:'event:'+id,restore:()=>showEvent(id)});
  allOn('[data-event-organizer]','click',btn=>{const org=orgList[Number(btn.dataset.eventOrganizer)];if(org)window.IdolPeople.showOrganizer(peopleContext(),org);});
+ allOn('[data-event-group]','click',btn=>{const grp=perfList[Number(btn.dataset.eventGroup)];if(grp)window.IdolPeople.showGroup(peopleContext(),grp,'activity');});
+ allOn('[data-event-city]','click',btn=>showFootprintDetail('cities',btn.dataset.eventCity));
+ allOn('[data-event-venue]','click',btn=>showFootprintDetail('venues',btn.dataset.eventVenue,btn.dataset.eventVenueCity));
+ allOn('[data-item-member]','click',btn=>showMember(btn.dataset.itemMember));
+ allOn('[data-item-group]','click',btn=>window.IdolPeople.showGroup(peopleContext(),btn.dataset.itemGroup,'activity'));
+ allOn('[data-item-organizer]','click',btn=>window.IdolPeople.showOrganizer(peopleContext(),btn.dataset.itemOrganizer));
  window.IdolPhotos.bindGallery(peopleContext(),e.attachments||[],'event-photo',()=>showEvent(id));
  e.interactions.forEach((item,index)=>window.IdolPhotos.bindGallery(peopleContext(),item.attachments||[],'item-photo-'+index,()=>showEvent(id)));
  on('#edit-basics','click',()=>editEvent(id));
  on('#add-item','click',()=>editItem(id));
- on('#delete-event','click',()=>{askConfirm({title:'删除活动',message:'删除这场活动及其全部消费明细？可在设置页恢复上一次保存。',okText:'确认删除',danger:true},()=>{const next=C.clone(state);next.records=next.records.filter(r=>r.id!==id);persist(next);closeModal(true);render();notice('活动已删除');});});
+ on('#delete-event','click',()=>{askConfirm({title:'删除活动',message:'删除这场活动及其全部消费明细？可在设置页恢复上一次保存。',okText:'确认删除',danger:true},()=>{const next=C.clone(state);next.records=next.records.filter(r=>r.id!==id);persist(next);if(modalStack.length)popModal(true);else closeModal(true);render();notice('活动已删除');});});
  allOn('[data-edit-item]','click',el=>editItem(id,Number(el.dataset.editItem)));
  allOn('[data-delete-item]','click',el=>{askConfirm({title:'删除消费明细',message:'确认删除这条消费明细？',okText:'确认删除',danger:true},()=>{const n=C.clone(e);n.interactions.splice(Number(el.dataset.deleteItem),1);commitEvent(n);showEvent(id);});});
 }
@@ -252,7 +344,7 @@ function editEvent(id,quickMemberId){
  const old=id?state.records.find(event=>event.id===id):null;
  const event=old?C.clone(old):{id:uid(),date:today(),event_type:'performance',event_name:'',city:'',venue:'',ticket_fee:0,drink_fee:0,interactions:[],created_at:new Date().toISOString()};
  modal(old?'修改活动':'记一场新的活动',
-  '<div class="form-grid">'+field('日期','e-date',event.date,'date')+select('活动类型','e-type',E_CREATE,event.event_type)+'</div>'+
+  '<div class="form-grid">'+field('日期','e-date',event.date,'date')+select('活动类型','e-type',old||event.event_type==='phone_photo'?E:E_CREATE,event.event_type)+'</div>'+
   '<div id="event-name-wrap">'+field('活动名称','e-name',event.event_name,'text','maxlength="300" autocomplete="off"')+'</div>'+
   '<p id="online-type-notice" class="notice hidden">线上进行（购买渠道默认线上购买），无需填写城市、场地、门票及 Drink 代。</p>'+
   '<div id="event-location-fields" class="form-grid"><div>'+field('城市','e-city',event.city,'text','autocomplete="off"')+historyPicker('cities')+'</div><div>'+field('场地 / 购买渠道','e-venue',event.venue,'text','autocomplete="off"')+historyPicker('venues')+'</div></div>'+
@@ -291,9 +383,22 @@ function editEvent(id,quickMemberId){
  on('#e-city','input',suggestions);
  on('#e-type','change',suggestions);
  suggestions();
+ let savingEvent=false;
  on('#save-event','click',()=>{
+  if(savingEvent)return;
+  savingEvent=true;
+  try{
+  const prevDate=old?old.date:'';
   event.date=C.validDate(read('e-date'));event.event_type=read('e-type');event.event_name=read('e-name');
   if(!event.event_name)throw new Error(event.event_type==='merch_only'?'请填写周边购买名称':'请填写活动名称');
+  if(prevDate&&event.date!==prevDate){
+   for(const entry of event.interactions||[]){
+    if(event.standalone_phone){entry.shot_at=event.date;}
+    else if(entry.shot_at&&entry.shot_at.slice(0,10)===prevDate){
+     entry.shot_at=event.date+entry.shot_at.slice(10);
+    }
+   }
+  }
   const online=['online_cheki','theme_homework','merch_only'].includes(event.event_type);
   if(event.event_type==='performance'){event.organizers=C.names(read('e-organizer'));event.organizer=event.organizers.join('，');}
   else{delete event.organizers;delete event.organizer;}
@@ -312,6 +417,7 @@ function editEvent(id,quickMemberId){
   if(!old&&event.event_type==='merch_only')editItem(event.id,null,quickMemberId,'merch');
   else if(quickMemberId)editItem(event.id,null,quickMemberId);
   else showEvent(event.id);
+  }catch(err){savingEvent=false;throw err;}
  });
 }
 function editItem(eventId,index,selectedMember,overrideKind){
@@ -333,7 +439,7 @@ function editItem(eventId,index,selectedMember,overrideKind){
   '<label class="field"><span id="i-name-label">'+(initialKind==='phone'?'成员 / 团体':initialKind==='merch'?'周边商品名称':'成员 / 团体名称')+'</span><input id="i-name" type="text" value="'+esc(initialName)+'" autocomplete="off" maxlength="1000"></label>'+
   '<div id="phone-target-row" class="chips"><button type="button" data-phone-target="member">按成员</button><button type="button" data-phone-target="group">按团体</button></div>'+
   '<p id="multi-hint" class="subtle">多人特典请填写所有成员，使用逗号分隔，至少两位。实付单价填写单张特典的实付金额。</p>'+historyPicker('names',initialKind==='phone'?'选择成员或团体':'从历史记录选择')+
-  '<div id="phone-event-link">'+field('合影日期','i-phone-date',original.date,'date')+select('绑定活动（选填）','i-phone-event',eventOptions,original.standalone_phone?'':original.id)+'</div>'+
+  '<div id="phone-event-link">'+field('合影日期','i-phone-date',(item.shot_at||original.date).slice(0,10),'date')+select('绑定活动（选填）','i-phone-event',eventOptions,original.standalone_phone?'':original.id)+'</div>'+
   '<div id="merch-event-link" class="hidden">'+field('购买日期','merch-date',original.date,'date')+select('绑定活动（选填）','merch-event',Object.assign({'':'不绑定具体活动（仅买周边）'},Object.fromEntries(Object.entries(eventOptions).slice(1))),original.standalone_merch?'':original.id)+'</div>'+
   '<div id="form-field">'+select('特典形式','i-form',C.benefitTypes(state),C.form(item,original.event_type,original))+'</div>'+
   '<div id="benefit-attributes" class="form-grid">'+select('尺寸','i-size',{'':'未指定',3:'3寸',5:'5寸',other:'其它尺寸'},item.photo_size||'')+select('签名','i-signature',{'':'未指定',signed:'有签',unsigned:'无签'},item.signature||(item.benefit_format==='signed'?'signed':item.benefit_format==='unsigned'?'unsigned':''))+'</div>'+
@@ -401,8 +507,8 @@ function editItem(eventId,index,selectedMember,overrideKind){
   $('#merch-org-field').classList.toggle('hidden',kind!=='merch');
   if($('#merch-extra-panel'))$('#merch-extra-panel').classList.toggle('hidden',kind!=='merch');
   $('#benefit-attributes').classList.toggle('hidden',kind==='merch'||kind==='phone');
-  $('#item-group-field').classList.toggle('hidden',kind==='individual'||kind==='multi'||kind==='phone');
-  if($('#item-group-label'))$('#item-group-label').textContent=kind==='merch'?'关联团体，多个用逗号分隔（选填）':'所属团体，多个用逗号分隔（选填）';
+  $('#item-group-field').classList.toggle('hidden',kind!=='merch');
+  if($('#item-group-label'))$('#item-group-label').textContent='关联团体，多个用逗号分隔（选填）';
   $('#i-shot-field').classList.toggle('hidden',kind==='phone'||kind==='merch');
   let options=[];
   try{
@@ -428,9 +534,16 @@ function editItem(eventId,index,selectedMember,overrideKind){
  on('#i-form','change',()=>{const format=read('i-form');if(format==='signed'||format==='unsigned')$('#i-signature').value=format;contextChanged();});
  for(const id of ['i-size','i-signature'])on('#'+id,'change',contextChanged);
  on('#item-identities','change',()=>{if(!old)contextChanged();});
- on('#i-price','input',markPricing);on('#i-price','change',markPricing);on('#i-qty','input',markPricing);on('#i-qty','change',markPricing);recommendations();
+ on('#i-price','input',markPricing);on('#i-price','change',markPricing);on('#i-qty','input',markPricing);on('#i-qty','change',markPricing);
+ on('#i-phone-event','change',()=>{const evId=read('i-phone-event');const ev=evId&&state.records.find(r=>r.id===evId);if(ev&&$('#i-phone-date'))$('#i-phone-date').value=ev.date;});
+ on('#merch-event','change',()=>{const evId=read('merch-event');const ev=evId&&state.records.find(r=>r.id===evId);if(ev&&$('#merch-date'))$('#merch-date').value=ev.date;});
+ recommendations();
  on('#back-event','click',()=>{if(!eventId)closeModal(false);else askConfirm({title:'放弃本条修改？',message:'放弃本条尚未保存的修改，返回活动详情？',okText:'放弃并返回',cancelText:'继续编辑',danger:true},()=>showEvent(eventId));});
+ let savingItem=false;
  function saveItem(){
+  if(savingItem)return;
+  savingItem=true;
+  try{
   const before=C.clone(state);
   const kind=read('i-kind'),target=read('i-name');
   if(!target)throw new Error(kind==='phone'?'请填写成员或团体':kind==='merch'?'请填写周边商品名称':'请填写成员或团体名称');
@@ -477,36 +590,41 @@ function editItem(eventId,index,selectedMember,overrideKind){
    applyRoles(next,item.participant_groups);
   }else{
    delete item.participant_groups;
-   if(kind==='phone'){delete item.affiliated_groups;delete item.affiliated_group;}
+   if(kind==='phone'||kind==='group'){delete item.affiliated_groups;delete item.affiliated_group;}
    else{item.affiliated_groups=C.names(read('i-group'));item.affiliated_group=item.affiliated_groups.join('，');}
   }
   const allNewItems=[item,...extraMerchItems];
   if(kind!=='phone'&&allNewItems.some(entry=>(entry.attachments||[]).some(a=>a.media_type==='video'||/\.(?:mp4|webm|mov|mkv|3gp|m4v)(?:$|\?)/i.test(a.data)||/^data:video\//i.test(a.data))))throw new Error('仅手机合影支持保存视频，请先移除视频或将消费类别改为手机合影');
   if(index==null)next.interactions.push(...allNewItems);else next.interactions[index]=item;
-  let destinationId=original.id;
+  let destinationId=original.id,standalonePhoneSaved=false;
   if(kind==='phone'||kind==='merch'){
    const isPhone=kind==='phone';
    const linked=isPhone?read('i-phone-event'):read('merch-event');
+   standalonePhoneSaved=isPhone&&!linked;
    const date=C.validDate(isPhone?read('i-phone-date'):read('merch-date'));
    const isSameStandalone=isPhone?(!linked&&original.standalone_phone):(!linked&&original.standalone_merch);
    const targetId=isSameStandalone?original.id:linked;
    if(isSameStandalone)next.date=date;
-   if(isPhone)item.shot_at=date;
    if(targetId!==original.id){
     const updated=C.clone(state);const source=updated.records.find(ev=>ev.id===original.id);if(source&&index!=null)source.interactions.splice(index,1);
     let destination=linked?updated.records.find(ev=>ev.id===linked):null;
     if(linked&&!destination)throw new Error('所选活动已不存在');
     if(!destination){destination=isPhone?{id:uid(),date,event_name:'独立手机合影',event_type:'phone_photo',standalone_phone:true,city:'-',venue:'-',ticket_fee:0,drink_fee:0,interactions:[]}:{id:uid(),date,event_name:'仅买周边',event_type:'merch_only',standalone_merch:true,city:'-',venue:'线上购买',ticket_fee:0,drink_fee:0,interactions:[]};updated.records.push(destination);}
+    if(isPhone){if(linked&&date===destination.date)delete item.shot_at;else item.shot_at=date;}
     destination.interactions.push(...allNewItems);destinationId=destination.id;
     updated.records=updated.records.filter(ev=>(!ev.standalone_phone&&!ev.standalone_merch)||ev.interactions.length>0||(ev.attachments||[]).length>0);
     persist(updated);render();
-   }else commitEvent(next,!eventId);
+   }else{
+    if(isPhone){if(linked&&date===next.date)delete item.shot_at;else item.shot_at=date;}
+    commitEvent(next,!eventId);
+   }
   }else commitEvent(next,!eventId);
   const expected=JSON.stringify(state);
   showEvent(destinationId);
   $('#modal-body').insertAdjacentHTML('afterbegin','<button id="undo-last-item" class="text">撤销刚才的保存</button>');
   on('#undo-last-item','click',()=>{if(JSON.stringify(state)!==expected)throw new Error('后续数据已更新，可通过设置页恢复上一份状态');persist(before);render();if(eventId&&state.records.some(event=>event.id===eventId))showEvent(eventId);else closeModal(true);notice('刚才的明细保存已撤销');});
-  notice(kind==='phone'&&!read('i-phone-event')?'手机合影已保存':kind==='merch'?'已保存 '+allNewItems.length+' 项周边':'明细已保存，归入原活动');
+  notice(standalonePhoneSaved?'手机合影已保存':kind==='merch'?'已保存 '+allNewItems.length+' 项周边':'明细已保存，归入原活动');
+  }catch(err){savingItem=false;throw err;}
  }
  on('#save-item','click',saveItem);
 }
